@@ -43,7 +43,7 @@ The standalone interface is a single `index.html` file with no build step or pac
 
 ```bash
 # Clone the repository
-git clone https://github.com/elder-plinius/G0DM0D3.git
+git clone https://github.com/h454n81bro-alt/G0DM0D3.git
 cd G0DM0D3
 
 # Open directly in your browser
