@@ -1,0 +1,1 @@
+ALTER TABLE `video_upload_parts` ADD `checksum` varchar(64);

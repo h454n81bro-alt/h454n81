@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1787209845370,
+      "tag": "0000_mighty_iron_fist",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1787210268660,
+      "tag": "0001_sour_karen_page",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1787210925642,
+      "tag": "0002_clean_doctor_doom",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1787211951132,
+      "tag": "0003_polite_dreaming_celestial",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1787284646961,
+      "tag": "0004_condemned_blue_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1787285149018,
+      "tag": "0005_dazzling_whizzer",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1787287943060,
+      "tag": "0006_typical_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1787291025974,
+      "tag": "0007_same_titanium_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1787373685881,
+      "tag": "0008_mixed_lila_cheney",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1787375835000,
+      "tag": "0009_fantastic_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1787441768912,
+      "tag": "0010_cynical_doctor_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1787445331600,
+      "tag": "0011_lush_monster_badoon",
+      "breakpoints": true
+    }
+  ]
+}

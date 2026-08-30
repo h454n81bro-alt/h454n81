@@ -1,0 +1,191 @@
+# Project TODO
+
+- [x] Merancang model data dokumen dan pasangan paragraf terjemahan per pengguna.
+- [x] Menambahkan penyimpanan dokumen dan riwayat yang dilindungi autentikasi.
+- [x] Menerima unggahan dokumen PDF dan TXT dengan validasi format serta ukuran.
+- [x] Mengekstrak dan menormalkan teks dokumen menjadi paragraf Arab berurutan.
+- [x] Menerjemahkan setiap paragraf Arab ke bahasa Indonesia menggunakan LLM secara aman.
+- [x] Membuat pembaca bilingual dengan teks Arab RTL di atas dan Indonesia di bawah.
+- [x] Menyediakan halaman riwayat dokumen khusus pengguna yang telah masuk.
+- [x] Menyediakan ekspor hasil bilingual ke TXT dan PDF.
+- [x] Menerapkan desain responsif premium dengan tipografi yang nyaman untuk Arab dan Indonesia.
+- [x] Menulis serta menjalankan pengujian unit untuk ekstraksi, pemisahan, dan eksport dokumen.
+- [x] Menjalankan pemeriksaan tipe, pengujian unit, serta inspeksi tampilan responsif pada desktop dan seluler.
+- [x] Menambahkan tabel glosarium Arab–Indonesia yang terisolasi per pengguna.
+- [x] Menyediakan pengelolaan istilah glosarium: tambah, ubah, dan hapus.
+- [x] Menyertakan glosarium aktif ke instruksi penerjemahan agar istilah dipertahankan konsisten.
+- [x] Membuat antarmuka glosarium yang elegan dan mudah digunakan dari ruang kerja.
+- [x] Menulis dan menjalankan pengujian unit untuk isolasi serta format glosarium.
+- [x] Menyimpan metadata istilah glosarium yang diterapkan pada setiap segmen terjemahan.
+- [x] Mengembalikan metadata penerapan istilah secara aman pada pembaca dokumen.
+- [x] Menambahkan sorotan visual dan keterangan padanan glosarium pada hasil bilingual.
+- [x] Menulis serta menjalankan pengujian unit untuk deteksi penerapan istilah glosarium.
+- [x] Menambahkan panel legenda sorotan glosarium yang dapat dibuka dan disembunyikan.
+- [x] Menyediakan pengaturan aksesibel untuk status legenda pada pembaca bilingual.
+- [x] Menulis dan menjalankan pengujian unit untuk status legenda pembaca.
+- [x] Menyimpan dan memulihkan preferensi buka-tutup legenda melalui local storage.
+- [x] Menulis serta menjalankan pengujian unit untuk serialisasi preferensi legenda.
+- [x] Membuat keterampilan reusable untuk penerjemah dokumen Arab–Indonesia bilingual dengan glosarium.
+- [x] Memvalidasi paket keterampilan sebelum diserahkan.
+- [x] Menyusun panduan integrasi API OpenAI atau Claude secara aman pada layanan penerjemahan.
+- [x] Menyusun contoh backend Node.js dan Python untuk batching serta penanganan rate limit Claude.
+- [x] Menyusun panduan ekstraksi PDF dua kolom dan catatan kaki Arab untuk penerjemahan.
+- [x] Menyusun contoh Python PyMuPDF untuk deteksi dua kolom dan ekstraksi Arab RTL.
+- [x] Menyusun contoh integrasi blok koordinat PyMuPDF ke pipeline Claude dengan relasi footnote.
+- [x] Menyusun panduan tata letak PDF bilingual adaptif untuk menangani ekspansi terjemahan.
+- [x] Menyusun panduan optimasi rendering PDF bilingual adaptif untuk buku ratusan halaman.
+- [x] Menyusun rancangan IndexedDB untuk checkpoint cache layout dokumen buku tebal.
+- [x] Menyusun benchmark baca-tulis IndexedDB untuk cache layout simulasi 500 halaman.
+- [x] Menyusun strategi kompresi LZ-string untuk cache layout besar di IndexedDB.
+- [x] Menyusun pola Web Worker untuk kompresi dan dekompresi checkpoint cache layout.
+- [x] Menyusun contoh Jest untuk kompresi LZ-string dan protokol Web Worker cache layout.
+- [x] Menyusun contoh UI React untuk indikator progres real-time Web Worker cache layout.
+- [x] Menyusun strategi pemeriksaan quota dan pembersihan otomatis cache IndexedDB kedaluwarsa.
+- [x] Menyusun hook React untuk pemantauan quota dan status cache IndexedDB secara real-time.
+- [x] Menyusun strategi versioning dan migrasi skema IndexedDB untuk cache layout.
+- [x] Menyusun integration test migrasi IndexedDB dari versi 1 ke versi terbaru.
+- [x] Menyusun strategi migrasi cache besar tanpa memblokir UI serta error logging fallback.
+- [x] Membuat dokumentasi arsitektur dan diagram alur sistem cache layout IndexedDB.
+- [x] Menyusun unit test error logging dan fallback memory-only pada migrasi IndexedDB.
+- [x] Menyusun dashboard React untuk monitoring performa cache dan error rate produksi.
+- [x] Menyusun integrasi error reporting Sentry/Datadog, optimasi dashboard, dan alert otomatis cache.
+- [x] Menyusun unit test lonjakan error rate cache, quality gate CI/CD, dan pola distributed tracing cache.
+- [x] Memverifikasi workflow CI/CD quality gate untuk test migrasi dan alert cache.
+- [x] Memverifikasi contoh distributed tracing cache serta batas atribut telemetry aman.
+- [x] Integrasikan workflow quality gate dan suite Jest cache ke repo sebelum deployment production diaktifkan.
+- [x] Menambahkan adapter tracing cache vendor-netral tanpa pengiriman telemetry eksternal.
+- [x] Menjalankan validasi adapter tracing cache vendor-netral dan menyiapkan integrasi Sentry/Datadog opsional.
+- [x] Menyusun benchmark komparatif LocalStorage, IndexedDB, dan Cache API dengan kompresi LZ-string.
+- [x] Memverifikasi skrip dan panduan benchmark LocalStorage, IndexedDB, serta Cache API sebelum penyerahan.
+- [x] Mengemas benchmark LocalStorage, IndexedDB, dan Cache API sebagai tool reusable.
+- [x] Menambahkan serta menjalankan pengujian otomatis tool benchmark dan cleanup storage.
+- [x] Memastikan unggah kitab PDF/TXT langsung memulai ekstraksi dan terjemahan bilingual dengan status proses yang jelas.
+- [x] Menambahkan serta menjalankan pengujian alur unggah kitab langsung, validasi ukuran/format, dan penanganan error.
+- [x] Menambahkan state UI terpisah untuk fase upload dan ekstraksi serta menonaktifkan kontrol unggah saat proses berlangsung.
+- [x] Menyinkronkan status server/client untuk dokumen yang baru diunggah dan sedang diterjemahkan.
+- [x] Menambahkan test validasi format/ukuran, upload sukses yang memicu terjemahan otomatis, serta error upload/terjemahan.
+- [x] Menambahkan test server untuk payload terlalu besar, teks Arab tidak ditemukan, dan hasil terjemahan parsial.
+- [x] Membatasi filter unggah kitab hanya ke format PDF dan EPUB.
+- [x] Menambahkan ekstraksi EPUB dan pengujian validasi PDF/EPUB sebelum penerjemahan otomatis.
+- [x] Menambahkan tombol refresh ruang kerja untuk mengosongkan pembaca setelah kitab dibaca tanpa menghapus riwayat.
+- [x] Menambahkan dan menjalankan pengujian perilaku reset pembaca ke tampilan kosong.
+- [x] Menambahkan pilihan bahasa sumber Arab atau Inggris pada unggahan serta menyimpannya di dokumen.
+- [x] Menyesuaikan ekstraksi, instruksi LLM, dan pembaca bilingual untuk bahasa sumber Arab atau Inggris.
+- [x] Menambahkan migrasi database dan pengujian validasi bahasa sumber serta terjemahan lintas bahasa.
+- [x] Menambahkan pilihan bahasa sumber Arab, Inggris, Melayu, Turki, Prancis, Jerman, Spanyol, dan Jepang.
+- [x] Memperluas normalisasi teks, instruksi penerjemahan, pembaca, dan ekspor untuk seluruh bahasa sumber.
+- [x] Menerapkan migrasi database dan menjalankan pengujian multi-bahasa.
+- [x] Memastikan refresh menghapus seluruh state pembaca dan menampilkan ruang kerja kosong tanpa menghapus riwayat.
+- [x] Menambahkan dan menjalankan pengujian reset pembaca ke kondisi kosong.
+- [x] Menambahkan dukungan unggah Word DOCX dan TXT pada filter file serta validasi server.
+- [x] Mengekstrak teks DOCX/TXT sesuai bahasa sumber sebelum penerjemahan otomatis.
+- [x] Menambahkan dan menjalankan pengujian ekstraksi serta validasi DOCX/TXT.
+- [x] Menambahkan model data video dan subtitle bertimestamp per pengguna.
+- [x] Menerapkan unggah video dengan format umum yang dapat diproses serta batas ukuran transkripsi.
+- [x] Menambahkan impor dari tautan media publik yang diizinkan tanpa melewati DRM atau pembatasan platform.
+- [x] Menerapkan transkripsi, terjemahan ke Indonesia, pemutaran subtitle, dan ekspor SRT/VTT.
+- [x] Menambahkan serta menjalankan migrasi dan pengujian alur panel video.
+- [x] Menambahkan subtitle playback yang benar-benar sinkron pada pemutar video melalui VTT dan cue aktif.
+- [x] Menambahkan pengujian router atau UI untuk upload/import, kegagalan pemrosesan, status video, serta ekspor subtitle.
+- [x] Menambahkan test router untuk unggah video dan kegagalan transkripsi yang menyimpan status failed serta errorMessage.
+- [x] Menambahkan test transisi status processing hingga translated dan ketersediaan ekspor subtitle setelah selesai.
+- [x] Menambahkan test router bahwa video translated menyediakan ekspor subtitle SRT dan VTT.
+- [x] Menambahkan editor teks subtitle Indonesia dengan penyimpanan perubahan per video.
+- [x] Menambahkan pengaturan ukuran, warna, latar, dan gaya teks subtitle pada pemutar.
+- [x] Menambahkan unduhan ringkasan hasil terjemahan video sebagai TXT dan PDF.
+- [x] Menambahkan serta menjalankan pengujian editor, preferensi gaya, dan ekspor ringkasan video.
+- [x] Menghasilkan ringkasan sintetis dari terjemahan subtitle, bukan transkrip lengkap bertimestamp.
+- [x] Menambahkan test bahwa ringkasan video berbeda dari gabungan seluruh subtitle dan siap diekspor TXT/PDF.
+- [x] Menghapus cache ringkasan sintetis saat subtitle video dikoreksi.
+- [x] Menambahkan test bahwa ringkasan dan ekspor setelah koreksi memakai isi subtitle terbaru.
+- [x] Mengekstrak helper ekspor ringkasan TXT/PDF agar sumber data terbaru dapat diuji.
+- [x] Menambahkan test ekspor TXT/PDF yang memakai ringkasan baru setelah koreksi subtitle.
+- [x] Mengekstrak orkestrator refetch dan ekspor ringkasan setelah koreksi subtitle.
+- [x] Menambahkan test integrasi ringan koreksi subtitle hingga ekspor TXT/PDF dengan ringkasan terbaru.
+- [x] Menambahkan indikator fase dan progress bar untuk transkripsi serta terjemahan video.
+- [x] Menambahkan indikator loading dan progress bar saat ringkasan video dibuat.
+- [x] Menambahkan test state progres/loading dan memvalidasi tampilan panel video.
+- [x] Menghapus batas ukuran unggah buatan pada dokumen dan video di aplikasi.
+- [x] Menampilkan umpan balik yang jelas apabila batas teknis layanan penyimpanan atau transkripsi terlampaui.
+- [x] Menambahkan serta menjalankan pengujian unggah tanpa batas ukuran aplikasi.
+- [x] Menambahkan pemetaan error batas layanan penyimpanan/upload pada unggah dokumen dan video.
+- [x] Menambahkan test error penyimpanan pada dokumen dan video dengan pesan yang ramah pengguna.
+- [x] Menambahkan test router documents.upload ketika storagePut gagal dan memverifikasi pesan ramah pengguna.
+- [x] Menambahkan test router videos.upload atau importPublicUrl ketika storagePut gagal dan memverifikasi pesan ramah pengguna.
+- [x] Mendiagnosis mutasi tRPC yang menerima respons HTML alih-alih JSON pada halaman utama.
+- [x] Memperbaiki rute atau payload mutasi dan menambahkan regresi test respons JSON.
+- [x] Menambahkan kontrak unggah langsung per pengguna agar byte file tidak dikirim melalui payload JSON tRPC.
+- [x] Mengalihkan unggah dokumen besar ke penyimpanan langsung dan finalisasi metadata melalui tRPC kecil.
+- [x] Menambahkan regresi test bahwa mutasi finalisasi menerima metadata kecil tanpa respons HTML PayloadTooLarge.
+- [x] Menambahkan kontrak unggah langsung dan finalisasi video agar payload video tidak memakai base64 tRPC.
+- [x] Mengalihkan panel video ke unggah langsung serta menambahkan regresi test payload metadata kecil.
+- [x] Menambahkan test HTTP/integrasi finalisasi dokumen yang membuktikan respons tRPC JSON untuk payload metadata kecil.
+- [x] Menambahkan test videos.finalizeUpload dan kontrak klien bahwa unggah video tidak lagi memakai base64 tRPC.
+- [x] Memvalidasi alur unggah langsung tanpa base64 dan respons tRPC JSON melalui test transport serta pemeriksaan sumber klien.
+- [x] Menetapkan kontrak multipart dan checkpoint lokal untuk resume upload video besar.
+- [x] Menerapkan endpoint multipart, status upload, dan finalisasi video setelah seluruh chunk diterima.
+- [x] Menerapkan klien chunked upload dengan retry, checkpoint, serta tombol lanjutkan unggahan.
+- [x] Menambahkan serta menjalankan pengujian pemulihan koneksi dan resume upload video.
+- [x] Menambahkan status visual untuk unggahan video yang dilanjutkan dari checkpoint.
+- [x] Menambahkan notifikasi penyelesaian penuh unggah sebelum subtitle diproses.
+- [x] Menambahkan dan menjalankan pengujian status notifikasi resume upload.
+- [x] Menambahkan model notifikasi video per pengguna untuk unggahan, pemrosesan, selesai, dan gagal.
+- [x] Menambahkan prosedur daftar serta penandaan notifikasi video telah dibaca.
+- [x] Membangun panel pusat notifikasi yang menampilkan riwayat dan akses ke video terkait.
+- [x] Menambahkan migrasi dan pengujian isolasi serta status notifikasi video.
+- [x] Membuat notifikasi uploaded saat video berhasil diterima sebelum pemrosesan subtitle dimulai.
+- [x] Menambahkan test lifecycle untuk status uploaded, processing, translated, dan failed.
+- [x] Menambahkan test isolasi bahwa pengguna tidak dapat membaca atau menandai notifikasi pengguna lain.
+- [x] Menambahkan test negatif daftar notifikasi agar pengguna A tidak menerima notifikasi pengguna B.
+- [x] Menambahkan test negatif penandaan baca agar notifikasi pengguna B tidak dapat diubah pengguna A.
+- [x] Menambahkan filter status dan kolom pencarian pada pusat notifikasi video.
+- [x] Menambahkan serta menjalankan pengujian filter dan pencarian riwayat video.
+- [x] Membuat dan memvalidasi keterampilan reusable untuk pusat notifikasi serta riwayat pemrosesan video.
+- [x] Menjalankan validasi pra-rilis untuk unggah langsung, resume upload, transkripsi, dan terjemahan video.
+- [x] Memeriksa log server serta konsol untuk error pemrosesan video sebelum publikasi.
+- [ ] Menjalankan smoke test end-to-end unggah langsung video, resume setelah gangguan koneksi, transkripsi, dan terjemahan subtitle.
+- [ ] Mencatat hasil tiap tahap smoke test pra-rilis video sebelum menyatakan siap dipublikasikan.
+- [ ] Menjalankan smoke test aktual menggunakan berkas MP4 uji kecil pada sesi terautentikasi.
+- [x] Membuat kontrol pemilih video dapat diakses sebagai label dengan input berkas turunan untuk pengujian dan aksesibilitas.
+- [x] Memastikan sesi browser pengujian terautentikasi sebelum unggah MP4 uji.
+- [x] Mendiagnosis sumber `failed to fetch` pada unggah multipart atau PUT storage video.
+- [x] Menambahkan regresi serta pesan pemulihan yang jelas untuk kegagalan jaringan unggah video.
+- [x] Menyediakan fallback unggah bagian video melalui jalur same-origin bila PUT presigned gagal di browser.
+- [x] Menyusun panduan kode fallback same-origin, retry, checkpoint lokal, dan unit test `Failed to fetch`.
+- [x] Menyusun contoh Axios interceptor, exponential backoff, dan penyimpanan checkpoint chunk video lokal.
+- [x] Merekam bukti validasi lokal MP4 dan kesiapan FFmpeg sambil menunggu sesi browser terautentikasi.
+- [x] Menambahkan panel khusus untuk unduh dan impor tautan video publik langsung.
+- [x] Menambahkan status proses, validasi keamanan, dan pesan pembatasan DRM pada unduhan tautan.
+- [x] Menambahkan serta menjalankan pengujian panel dan error unduhan tautan publik.
+- [x] Menambahkan test logika panel unduh tautan untuk input valid, loading, dan batasan URL internal/DRM.
+- [x] Menambahkan test error router import tautan publik dan pesan kegagalan unduhan yang ramah pengguna.
+- [x] Menambahkan test komponen panel unduh tautan untuk input valid, loading, submit sukses, dan peringatan DRM.
+- [x] Memperbaiki validasi unggah video agar ekstensi video sah tidak ditolak oleh variasi MIME browser.
+- [x] Menambahkan regresi test ekstensi video sah dengan MIME generik atau kosong.
+- [x] Menghapus pembatasan ekstensi dan MIME dari pemilih serta validasi unggah video awal.
+- [x] Mengandalkan pemeriksaan FFmpeg untuk menolak file yang bukan video atau rusak dengan pesan jelas.
+- [x] Menambahkan serta menjalankan test file generik dan error verifikasi FFmpeg pada upload video.
+- [x] Menormalisasi error FFmpeg menjadi pesan ramah ketika berkas bukan video valid atau rusak.
+- [x] Menambahkan test upload file non-video atau rusak yang lolos validasi awal lalu gagal pada FFmpeg.
+- [x] Menambahkan test router finalisasi/unggah untuk file generik yang gagal diekstrak oleh FFmpeg lalu berstatus failed dengan pesan ramah.
+- [x] Mendiagnosis tautan impor publik yang mengembalikan halaman HTML dan menolaknya sebelum diteruskan ke FFmpeg.
+- [x] Menambahkan regresi import tautan halaman web yang menyamar sebagai video serta pemeriksaan kelengkapan ukuran bagian resume.
+- [x] Menambahkan checksum konten per bagian untuk mendeteksi byte resume yang berubah walaupun ukurannya sama.
+- [x] Mengubah penanganan URL halaman web pada panel tautan menjadi panduan jelas tanpa menampilkan error mutasi mentah.
+- [x] Menambahkan regresi UI untuk URL halaman publik yang bukan file media langsung.
+- [x] Menelusuri dan menutup jalur impor tautan yang masih meneruskan error halaman web sebagai mutasi mentah.
+- [x] Menambahkan regresi untuk memastikan pesan halaman web hanya muncul sebagai panduan UI.
+- [x] Menambahkan tombol aman untuk membuka halaman sumber dari URL publik dan kembali memasukkan URL media resmi langsung.
+- [x] Menambahkan regresi UI untuk navigasi halaman sumber tanpa mengimpor atau mengunduh media secara otomatis.
+- [x] Mengembalikan hasil panduan sukses dari router untuk URL halaman web agar tidak tercatat sebagai error mutasi.
+- [x] Memverifikasi hasil halaman sumber tidak memanggil impor sukses, invalidasi riwayat, atau menutup panel.
+- [x] Memeriksa ulang alur tautan publik pada build aktif dan memastikan hasil halaman sumber tidak menimbulkan error mutasi.
+- [x] Menambahkan tautan unduh langsung untuk video milik pengguna tanpa batas ukuran aplikasi.
+- [x] Menambahkan pengujian otorisasi tautan unduh video dan kesiapan unduhan file besar.
+- [x] Merancang job konversi 8K berbasis antrean di infrastruktur dengan sumber daya transkode memadai.
+- [x] Menambahkan model data job konversi 8K dengan status antrean, progres, dan hasil.
+- [x] Menambahkan prosedur pembuatan serta pemantauan job konversi 8K per pengguna.
+- [x] Menambahkan kontrol permintaan 8K dan status antrean pada panel video.
+- [x] Menambahkan migrasi dan pengujian job konversi 8K tanpa menjalankan transkode berat di server aplikasi.
+- [x] Menambahkan test signed URL unduhan video besar tanpa proxy byte melalui aplikasi.
+- [x] Menambahkan test error path ketika signed URL unduhan video tidak dapat dibuat.

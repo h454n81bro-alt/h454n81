@@ -1,0 +1,1 @@
+ALTER TABLE `documents` ADD `sourceLanguage` enum('arabic','english') DEFAULT 'arabic' NOT NULL;

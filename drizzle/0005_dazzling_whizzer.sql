@@ -1,0 +1,1 @@
+ALTER TABLE `documents` MODIFY COLUMN `sourceLanguage` enum('arabic','english','malay','turkish','french','german','spanish','japanese') NOT NULL DEFAULT 'arabic';

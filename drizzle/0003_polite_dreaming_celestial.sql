@@ -1,0 +1,1 @@
+ALTER TABLE `document_segments` ADD `glossaryMatches` text;
