@@ -1,0 +1,35 @@
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: penerjemah_arab
+      MARIADB_USER: appuser
+      MARIADB_PASSWORD: apppass
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mysql://appuser:apppass@db:3306/penerjemah_arab
+      JWT_SECRET: local-dev-secret-please-change
+      VITE_APP_ID: local-dev
+      PORT: 3000
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:
