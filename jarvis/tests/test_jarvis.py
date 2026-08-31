@@ -302,12 +302,80 @@ class StubbedJarvis(TempVault):
         )
         original = server.call_anthropic
 
-        def fake(config, system, messages, timeout=60):
-            self.sent.append({"config": config, "system": system, "messages": messages})
+        def fake(config, system, messages, timeout=60, model=None):
+            self.sent.append({"config": config, "system": system, "messages": messages,
+                              "model": model})
             return "Very good, sir."
 
         server.call_anthropic = fake
         self.addCleanup(setattr, server, "call_anthropic", original)
+
+
+class TestPersonalityDials(unittest.TestCase):
+    """TARS-style dials: the character is composed, not hard-coded."""
+
+    def test_defaults_are_the_butler(self):
+        prompt = server.compose_system_prompt()
+        for trait in ["butler", "sir", "razor wit", "two or three sentences"]:
+            self.assertIn(trait, prompt.lower())
+
+    def test_dials_actually_change_the_prompt(self):
+        deadpan = server.compose_system_prompt({"wit": 0, "brevity": 100, "formality": 0})
+        self.assertIn("no jokes", deadpan.lower())
+        self.assertIn("one sentence", deadpan.lower())
+        self.assertNotIn("butler", deadpan.lower())
+        self.assertIn('do not call the user "sir"', deadpan.lower())
+
+        florid = server.compose_system_prompt({"wit": 100, "brevity": 0, "formality": 100})
+        self.assertIn("razor wit", florid.lower())
+        self.assertIn("five sentences", florid.lower())
+        self.assertIn("butler", florid.lower())
+
+    def test_every_band_is_reachable(self):
+        seen = set()
+        for value in range(0, 101, 5):
+            seen.add(server.compose_system_prompt({"wit": value, "brevity": value,
+                                                   "formality": value}))
+        self.assertEqual(len(seen), 3, "the three bands should give three distinct prompts")
+
+    def test_rubbish_from_the_browser_is_clamped(self):
+        for rubbish in [None, "nonsense", {"wit": 999}, {"wit": -5}, {"wit": "high"},
+                        {"unknown": 1}, []]:
+            dials = server.clamp_dials(rubbish)
+            self.assertEqual(set(dials), set(server.DIALS))
+            for value in dials.values():
+                self.assertTrue(0 <= value <= 100, dials)
+        self.assertEqual(server.clamp_dials({"wit": 999})["wit"], 100)
+        self.assertEqual(server.clamp_dials({"wit": -5})["wit"], 0)
+        self.assertEqual(server.clamp_dials({"wit": "high"}), server.DEFAULT_DIALS)
+
+    def test_the_notes_rules_survive_every_setting(self):
+        """No dial may talk the assistant out of grounding or into markdown."""
+        for value in (0, 50, 100):
+            prompt = server.compose_system_prompt({"wit": value, "brevity": value,
+                                                   "formality": value}).lower()
+            self.assertIn("only from the notes", prompt)
+            self.assertIn("do not invent", prompt)
+            self.assertIn("never use markdown", prompt)
+
+
+class TestModelHotSwap(unittest.TestCase):
+
+    def test_allowlisted_model_is_honoured(self):
+        self.assertEqual(server.resolve_model("claude-haiku-4-5", {}), "claude-haiku-4-5")
+
+    def test_unknown_model_falls_back_and_is_never_forwarded(self):
+        for rubbish in ["evil-model", "", None, "../../etc/passwd", "claude-opus-5 ; rm -rf /"]:
+            self.assertIn(server.resolve_model(rubbish, {}), server.MODEL_IDS)
+
+    def test_config_model_is_the_default(self):
+        self.assertEqual(server.resolve_model(None, {"model": "claude-sonnet-5"}),
+                         "claude-sonnet-5")
+
+    def test_every_advertised_model_is_resolvable(self):
+        for model in server.MODELS:
+            self.assertEqual(server.resolve_model(model["id"], {}), model["id"])
+            self.assertTrue(model["label"] and model["note"])
 
 
 class TestAsk(StubbedJarvis):
@@ -340,6 +408,22 @@ class TestAsk(StubbedJarvis):
         system = self.sent[-1]["system"].lower()
         for trait in ["butler", "sir", "only from the notes"]:
             self.assertIn(trait, system)
+
+    def test_dials_reach_the_model(self):
+        self.jarvis.ask("what is our pricing strategy", "s1",
+                        dials={"wit": 0, "brevity": 100, "formality": 0})
+        self.assertIn("no jokes", self.sent[-1]["system"].lower())
+
+    def test_model_choice_reaches_the_call_and_the_response(self):
+        result = self.jarvis.ask("what is our pricing strategy", "s1",
+                                 model="claude-haiku-4-5")
+        self.assertEqual(self.sent[-1]["model"], "claude-haiku-4-5")
+        self.assertEqual(result["model"], "claude-haiku-4-5")
+
+    def test_a_model_off_the_allowlist_is_ignored(self):
+        result = self.jarvis.ask("what is our pricing strategy", "s1", model="evil-model")
+        self.assertIn(self.sent[-1]["model"], server.MODEL_IDS)
+        self.assertNotEqual(result["model"], "evil-model")
 
     def test_session_history_is_kept_and_capped(self):
         for i in range(8):
@@ -519,6 +603,31 @@ class TestHttp(TempVault):
         self.assertIn("25 notes indexed", payload["greeting"])
         self.assertEqual(len(payload["suggestions"]), 3)
         self.assertIsNone(payload["model"], "offline mode must not advertise a model")
+
+    def test_status_advertises_models_and_dials(self):
+        payload = json.loads(self.get("/api/status")[1])
+        # This instance is offline, so it must not offer a model picker.
+        self.assertEqual(payload["models"], [])
+        self.assertIsNone(payload["defaultModel"])
+        self.assertEqual(set(payload["dials"]), set(server.DIALS))
+
+    def test_chat_accepts_dials_and_model_over_http(self):
+        status, payload = self.post("/chat", {
+            "question": "what is the wholesale margin", "session": "http2",
+            "dials": {"wit": 0, "brevity": 100, "formality": 0},
+            "model": "claude-haiku-4-5",
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["answer"])
+
+    def test_chat_survives_a_hostile_body(self):
+        for body in [{"question": "hi", "dials": "not-a-dict"},
+                     {"question": "hi", "dials": {"wit": [1, 2]}},
+                     {"question": "hi", "model": 12345},
+                     {"question": "hi", "model": {"nested": True}}]:
+            status, payload = self.post("/chat", body)
+            self.assertEqual(status, 200, body)
+            self.assertTrue(payload["answer"], body)
 
     def test_chat_round_trip(self):
         status, payload = self.post("/chat", {"question": "what is the wholesale margin",

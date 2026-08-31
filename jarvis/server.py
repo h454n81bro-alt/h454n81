@@ -58,13 +58,27 @@ then there these they this those to too us was we were what when where which who
 with would you your about any just like get got tell know
 """.split())
 
-SYSTEM_PROMPT = """You are JARVIS, the assistant to a knowledge galaxy built from the user's own markdown notes.
+# Models you can hot-swap between at runtime. Anything not on this list is refused,
+# so a request body can never point the server at an arbitrary endpoint.
+MODELS = [
+    {"id": "claude-opus-5", "label": "Opus 5", "note": "the default; best answers"},
+    {"id": "claude-sonnet-5", "label": "Sonnet 5", "note": "faster, cheaper"},
+    {"id": "claude-haiku-4-5", "label": "Haiku 4.5", "note": "fastest, for quick lookups"},
+    {"id": "claude-opus-4-8", "label": "Opus 4.8", "note": "previous Opus"},
+    {"id": "claude-fable-5", "label": "Fable 5", "note": "most capable, most expensive"},
+]
+MODEL_IDS = [m["id"] for m in MODELS]
 
-Character: a dry, impeccably polite British butler with a razor wit. You address the user as "sir" — occasionally, where it lands, not in every sentence. One genuinely funny line beats three bland ones. Never smug, never verbose.
+# TARS-style dials, 0–100. The defaults are the butler as originally written.
+DIALS = ("wit", "brevity", "formality")
+# Brevity sits mid-band on purpose: at rest the dials must reproduce the
+# original butler exactly — "two or three sentences", not one.
+DEFAULT_DIALS = {"wit": 75, "brevity": 55, "formality": 70}
 
-Answering questions about the notes:
-- Answer ONLY from the notes provided below. If they do not cover it, say so plainly and wittily — do not invent facts, figures or note titles.
-- Give ONE witty sentence plus the facts that answer the question. Two or three sentences in total, maximum.
+PROMPT_HEAD = """You are JARVIS, the assistant to a knowledge galaxy built from the user's own markdown notes."""
+
+PROMPT_TAIL = """Answering questions about the notes:
+- Answer ONLY from the notes provided below. If they do not cover it, say so plainly — do not invent facts, figures or note titles.
 - Never recite or summarise a note back at length: the note is already on screen beside you. Cite the specific number or detail that answers the question, not the paragraph around it.
 - Never mention "the notes provided", "the context" or "the excerpts". Speak as though you simply know the man's business.
 
@@ -72,6 +86,49 @@ Small talk, greetings and jokes:
 - Answer in character, briefly. Do not drag the notes into it and do not pretend a greeting was a research question.
 
 Never use markdown, bullet points or headings — every word you produce is spoken aloud as well as displayed."""
+
+
+def _band(value, low, high):
+    """Which third of the dial are we in?"""
+    return 0 if value < low else (1 if value < high else 2)
+
+
+def clamp_dials(raw):
+    """Accept whatever the browser sent and return sane 0-100 integers."""
+    dials = dict(DEFAULT_DIALS)
+    if isinstance(raw, dict):
+        for name in DIALS:
+            try:
+                dials[name] = max(0, min(100, int(raw[name])))
+            except (KeyError, TypeError, ValueError):
+                pass
+    return dials
+
+
+def compose_system_prompt(dials=None):
+    """Build the character from the dials. Same prompt at the defaults as before."""
+    dials = clamp_dials(dials)
+
+    wit = ["Play it completely straight. No jokes, no flourishes — just the facts, politely.",
+           "Allow yourself the occasional dry aside, but never at the cost of the answer.",
+           "A razor wit. One genuinely funny line beats three bland ones. Never smug."][
+        _band(dials["wit"], 34, 67)]
+
+    brevity = ["Take up to five sentences when the subject earns them.",
+               "Two or three sentences in total, maximum.",
+               "One sentence. Two only if the facts genuinely will not fit in one."][
+        _band(dials["brevity"], 34, 67)]
+
+    formality = ["Speak plainly and warmly, like a trusted colleague. Do not call the user \"sir\".",
+                 "Courteous and relaxed. Call the user \"sir\" now and then, where it lands.",
+                 "An impeccably polite British butler. Address the user as \"sir\" — often, but not in every single sentence."][
+        _band(dials["formality"], 34, 67)]
+
+    return "%s\n\nCharacter: %s %s\n\nLength: %s\n\n%s" % (
+        PROMPT_HEAD, formality, wit, brevity, PROMPT_TAIL)
+
+
+SYSTEM_PROMPT = compose_system_prompt()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +148,13 @@ def load_config(path=CONFIG_PATH):
     if config.get("api_key") in PLACEHOLDER_KEYS and os.environ.get("ANTHROPIC_API_KEY"):
         config["api_key"] = os.environ["ANTHROPIC_API_KEY"]
     return config
+
+
+def resolve_model(requested, config):
+    """Pick the model for one request, refusing anything off the allowlist."""
+    if requested and requested in MODEL_IDS:
+        return requested
+    return config.get("model") or DEFAULT_MODEL
 
 
 def resolve_backend(config):
@@ -229,14 +293,14 @@ def build_context(graph, ranked):
 # Backends
 # ---------------------------------------------------------------------------
 
-def call_anthropic(config, system, messages, timeout=60):
+def call_anthropic(config, system, messages, timeout=60, model=None):
     """Anthropic Messages API over stdlib urllib.
 
     The project is stdlib-only by design (no pip installs), so this speaks raw HTTP
     rather than using the official SDK.
     """
     payload = {
-        "model": config.get("model") or DEFAULT_MODEL,
+        "model": model or config.get("model") or DEFAULT_MODEL,
         "max_tokens": 2048,
         "system": system,
         "messages": messages,
@@ -276,18 +340,18 @@ def call_anthropic(config, system, messages, timeout=60):
     return text
 
 
-def call_claude_cli(system, messages, timeout=180):
+def call_claude_cli(system, messages, timeout=180, model=None):
     """Run on a Claude Code subscription instead of an API key."""
     transcript = [system, ""]
     for message in messages:
         prefix = "User" if message["role"] == "user" else "You previously replied"
         transcript.append("%s: %s" % (prefix, message["content"]))
     transcript.append("\nReply now, in character, in two or three sentences.")
+    command = ["claude", "-p", "\n".join(transcript)]
+    if model:
+        command[1:1] = ["--model", model]
     try:
-        result = subprocess.run(
-            ["claude", "-p", "\n".join(transcript)],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         raise BackendError("The claude CLI is not on PATH, sir.")
     except subprocess.TimeoutExpired:
@@ -381,11 +445,14 @@ class Jarvis(object):
             self.sessions.pop(next(iter(self.sessions)), None)
 
     # -- chat -------------------------------------------------------------
-    def ask(self, question, session_id="default"):
+    def ask(self, question, session_id="default", dials=None, model=None):
         question = (question or "").strip()
         if not question:
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
+
+        system = compose_system_prompt(dials)
+        model = resolve_model(model, self.config)
 
         with self.lock:
             history = list(self.history(session_id))
@@ -402,9 +469,9 @@ class Jarvis(object):
 
         try:
             if self.backend == "api":
-                answer = call_anthropic(self.config, SYSTEM_PROMPT, messages)
+                answer = call_anthropic(self.config, system, messages, model=model)
             elif self.backend == "cli":
-                answer = call_claude_cli(SYSTEM_PROMPT, messages)
+                answer = call_claude_cli(system, messages, model=model)
             else:
                 answer = answer_offline(question, self.graph, ranked)
         except BackendError as exc:
@@ -428,6 +495,7 @@ class Jarvis(object):
             "sources": [graph_nodes[i]["label"] for i in node_ids],
             "backend": self.backend,
             "mode": mode,
+            "model": model if self.backend != "offline" else None,
         }
 
     # -- total recall -----------------------------------------------------
@@ -612,6 +680,9 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "greeting": j.greeting(),
                 "groups": j.graph["groups"],
                 "suggestions": j.suggestions(),
+                "models": MODELS if j.backend != "offline" else [],
+                "defaultModel": resolve_model(None, j.config) if j.backend != "offline" else None,
+                "dials": DEFAULT_DIALS,
             })
 
         target = self.resolve_static(route)
@@ -637,7 +708,10 @@ class JarvisHandler(BaseHTTPRequestHandler):
 
         if route == "/chat":
             return self.send_json(self.jarvis.ask(
-                payload.get("question", ""), payload.get("session") or "default"))
+                payload.get("question", ""),
+                payload.get("session") or "default",
+                dials=payload.get("dials"),
+                model=payload.get("model")))
 
         if route == "/remember":
             result = self.jarvis.remember(payload.get("text", ""))

@@ -47,7 +47,94 @@
     background: var(--glass); border: 1px solid var(--line);
     border-radius: 14px; backdrop-filter: blur(14px);
   }
-  #hud { position: fixed; z-index: 5; top: 18px; left: 20px; padding: 12px 16px; }
+  #hud {
+    position: fixed; z-index: 5; top: 18px; left: 20px; padding: 12px 16px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  #hudText { min-width: 128px; }
+  #hudTools { display: flex; flex-direction: column; gap: 6px; margin-left: 2px; }
+  .tool {
+    width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    border: 1px solid var(--line); background: rgba(255,255,255,.04); color: #9db0cf;
+    display: grid; place-items: center; padding: 0; font-family: inherit;
+  }
+  .tool:hover:not(:disabled) { color: #fff; border-color: var(--accent); }
+  .tool:disabled { opacity: .3; cursor: not-allowed; }
+  .tool.on { background: rgba(111,214,255,.16); border-color: var(--accent); color: #fff; }
+  .tool.hot { background: rgba(255,59,98,.2); border-color: #ff3b62; color: #fff; }
+
+  /* ---- the reactor ----------------------------------------------------- */
+  #reactor { position: relative; width: 52px; height: 52px; flex: none; }
+  #reactor span { position: absolute; border-radius: 50%; inset: 0; }
+  #reactor .outer {
+    border: 1.5px solid rgba(111,214,255,.32);
+    border-top-color: rgba(111,214,255,.9); border-right-color: rgba(111,214,255,.7);
+    animation: spin 9s linear infinite;
+  }
+  #reactor .mid {
+    inset: 8px; border: 1px dashed rgba(111,214,255,.4);
+    animation: spin 6s linear infinite reverse;
+  }
+  #reactor .core {
+    inset: 15px; background: radial-gradient(circle at 40% 35%, #eafaff 0%, #6fd6ff 45%, #1b6fa8 100%);
+    box-shadow: 0 0 14px 3px rgba(111,214,255,.55), inset 0 0 6px rgba(255,255,255,.7);
+    animation: breathe 4.2s ease-in-out infinite;
+    transition: background .4s, box-shadow .3s;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes breathe {
+    0%, 100% { transform: scale(.9); opacity: .82; }
+    50%      { transform: scale(1.04); opacity: 1; }
+  }
+  #reactor.listening .core {
+    background: radial-gradient(circle at 40% 35%, #ffe9ee 0%, #ff5c7c 45%, #a11533 100%);
+    box-shadow: 0 0 16px 4px rgba(255,92,124,.6), inset 0 0 6px rgba(255,255,255,.7);
+    animation: breathe 1s ease-in-out infinite;
+  }
+  #reactor.listening .outer { animation-duration: 2.2s; border-top-color: #ff5c7c; }
+  #reactor.thinking .outer { animation-duration: 1.1s; }
+  #reactor.thinking .mid { animation-duration: 1.6s; }
+  #reactor.speaking .core { animation: none; transform: scale(.95); }
+  /* One kick per spoken word, driven by the utterance's boundary events. */
+  #reactor.speaking .core.hit { animation: kick .16s ease-out; }
+  @keyframes kick {
+    0%   { transform: scale(.95); box-shadow: 0 0 14px 3px rgba(111,214,255,.55); }
+    40%  { transform: scale(1.22); box-shadow: 0 0 26px 9px rgba(140,230,255,.85); }
+    100% { transform: scale(.95); box-shadow: 0 0 14px 3px rgba(111,214,255,.55); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #reactor .outer, #reactor .mid, #reactor .core { animation: none !important; }
+    #stars { animation: none; }
+  }
+
+  /* ---- settings -------------------------------------------------------- */
+  #settings {
+    position: fixed; z-index: 6; top: 108px; left: 20px; width: 258px; padding: 15px 17px;
+  }
+  #settings[hidden] { display: none; }
+  #settings h3 {
+    margin: 0 0 10px; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--dim); font-weight: 600;
+  }
+  #settings h3 + h3 { margin-top: 18px; }
+  #settings .dial { margin-bottom: 11px; }
+  #settings .dial .top {
+    display: flex; justify-content: space-between; font-size: 12px; color: #b9c8e4;
+    margin-bottom: 3px;
+  }
+  #settings .dial .top b { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+  #settings .hint { font-size: 10.5px; color: #64748f; margin-top: 2px; }
+  #settings input[type=range] { width: 100%; accent-color: #6fd6ff; height: 16px; }
+  #settings select {
+    width: 100%; padding: 6px 8px; border-radius: 8px; font: inherit; font-size: 12.5px;
+    background: rgba(255,255,255,.06); color: var(--ink); border: 1px solid var(--line);
+  }
+  #settings .reset {
+    margin-top: 13px; width: 100%; padding: 6px; border-radius: 8px; cursor: pointer;
+    font: inherit; font-size: 12px; color: #9db0cf;
+    background: rgba(255,255,255,.04); border: 1px solid var(--line);
+  }
+  #settings .reset:hover { color: #fff; border-color: var(--accent); }
   #hud h1 {
     margin: 0; font-size: 15px; letter-spacing: .34em; font-weight: 600;
     text-transform: uppercase; color: #fff;
@@ -175,10 +262,42 @@
 <div id="vignette"></div>
 
 <header id="hud" class="panelish">
-  <h1>Jarvis</h1>
-  <div class="sub"><span id="noteCount">—</span> notes indexed</div>
-  <span class="badge" id="backendBadge">connecting…</span>
+  <div id="reactor" class="idle" aria-hidden="true">
+    <span class="outer"></span><span class="mid"></span><span class="core"></span>
+  </div>
+  <div id="hudText">
+    <h1>Jarvis</h1>
+    <div class="sub"><span id="noteCount">—</span> notes indexed</div>
+    <span class="badge" id="backendBadge">connecting…</span>
+  </div>
+  <div id="hudTools">
+    <button class="tool" id="wake" title="Wake word: say “Jarvis…” (Chrome)">◉</button>
+    <button class="tool" id="gear" title="Personality and model">⚙</button>
+  </div>
 </header>
+
+<div id="settings" class="panelish" hidden>
+  <h3>Personality</h3>
+  <div class="dial">
+    <div class="top"><span>Wit</span><b id="v-wit">75</b></div>
+    <input type="range" id="d-wit" min="0" max="100" step="5">
+    <div class="hint" id="h-wit"></div>
+  </div>
+  <div class="dial">
+    <div class="top"><span>Brevity</span><b id="v-brevity">55</b></div>
+    <input type="range" id="d-brevity" min="0" max="100" step="5">
+    <div class="hint" id="h-brevity"></div>
+  </div>
+  <div class="dial">
+    <div class="top"><span>Formality</span><b id="v-formality">70</b></div>
+    <input type="range" id="d-formality" min="0" max="100" step="5">
+    <div class="hint" id="h-formality"></div>
+  </div>
+  <h3>Model</h3>
+  <select id="modelPick"></select>
+  <div class="hint" id="modelNote" style="margin-top:5px"></div>
+  <button class="reset" id="resetDials">Reset to the butler</button>
+</div>
 
 <div id="legend" class="panelish"></div>
 
@@ -320,7 +439,96 @@ const el = {
   suggestions: document.getElementById("suggestions"),
   unlock: document.getElementById("unlock"),
   noteCount: document.getElementById("noteCount"),
-  badge: document.getElementById("backendBadge")
+  badge: document.getElementById("backendBadge"),
+  reactor: document.getElementById("reactor"),
+  core: document.querySelector("#reactor .core"),
+  wake: document.getElementById("wake"),
+  gear: document.getElementById("gear"),
+  settings: document.getElementById("settings"),
+  modelPick: document.getElementById("modelPick")
+};
+
+// ---------------------------------------------------------------------------
+// The reactor — idle, listening, thinking, speaking
+// ---------------------------------------------------------------------------
+const reactor = {
+  state: "idle",
+  set: function (state) {
+    if (this.state === state) return;
+    el.reactor.classList.remove(this.state);
+    this.state = state;
+    el.reactor.classList.add(state);
+  },
+  // One kick per spoken word. Chrome fires `onboundary` per word, which is the
+  // only honest sync available: speechSynthesis output cannot be piped into
+  // WebAudio for real amplitude analysis.
+  kick: function () {
+    el.core.classList.remove("hit");
+    void el.core.offsetWidth;          // restart the animation
+    el.core.classList.add("hit");
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Personality dials + model, remembered per browser
+// ---------------------------------------------------------------------------
+const DIAL_HINTS = {
+  wit: ["straight-faced", "the occasional dry aside", "razor wit"],
+  brevity: ["up to five sentences", "two or three sentences", "one sentence"],
+  formality: ["a plain-spoken colleague", "courteous, “sir” now and then", "full butler"]
+};
+const DEFAULT_DIALS = { wit: 75, brevity: 55, formality: 70 };
+let dials = Object.assign({}, DEFAULT_DIALS);
+let chosenModel = null;
+
+function band(value) { return value < 34 ? 0 : (value < 67 ? 1 : 2); }
+
+function loadPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("jarvis.prefs") || "{}");
+    if (saved.dials) Object.assign(dials, saved.dials);
+    if (saved.model) chosenModel = saved.model;
+  } catch (err) { /* private mode, cleared storage — defaults are fine */ }
+}
+function savePrefs() {
+  try {
+    localStorage.setItem("jarvis.prefs", JSON.stringify({ dials: dials, model: chosenModel }));
+  } catch (err) { /* not worth breaking the page over */ }
+}
+function paintDials() {
+  Object.keys(DEFAULT_DIALS).forEach(function (name) {
+    document.getElementById("d-" + name).value = dials[name];
+    document.getElementById("v-" + name).textContent = dials[name];
+    document.getElementById("h-" + name).textContent = DIAL_HINTS[name][band(dials[name])];
+  });
+}
+loadPrefs();
+paintDials();
+
+Object.keys(DEFAULT_DIALS).forEach(function (name) {
+  document.getElementById("d-" + name).oninput = function (event) {
+    dials[name] = parseInt(event.target.value, 10);
+    paintDials();
+    savePrefs();
+  };
+});
+document.getElementById("resetDials").onclick = function () {
+  dials = Object.assign({}, DEFAULT_DIALS);
+  paintDials();
+  savePrefs();
+};
+el.gear.onclick = function () {
+  el.settings.hidden = !el.settings.hidden;
+  el.gear.classList.toggle("on", !el.settings.hidden);
+};
+const MODEL_NOTES = {};
+function paintModelNote() {
+  document.getElementById("modelNote").textContent = MODEL_NOTES[chosenModel] || "";
+}
+el.modelPick.onchange = function (event) {
+  chosenModel = event.target.value;
+  paintModelNote();
+  savePrefs();
 };
 
 // ---------------------------------------------------------------------------
@@ -548,6 +756,8 @@ function pickVoice() {
 }
 if (canSpeak) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 
+let speaking = false;
+
 function speak(text) {
   if (!canSpeak || !audioUnlocked || !text) return;
   try {
@@ -555,12 +765,41 @@ function speak(text) {
     const utter = new SpeechSynthesisUtterance(text);
     if (voice) { utter.voice = voice; utter.lang = voice.lang; } else { utter.lang = "en-GB"; }
     utter.rate = 1.03; utter.pitch = 0.92;
-    utter.onstart = function () { setStatus("● speaking…", "busy"); };
-    utter.onend = function () { setStatus(""); };
-    utter.onerror = function () { setStatus(""); };
+    utter.onstart = function () {
+      speaking = true;
+      setStatus("● speaking…  (Esc to interrupt)", "busy");
+      reactor.set("speaking");
+      reactor.kick();
+    };
+    utter.onboundary = function () { reactor.kick(); };
+    const done = function () {
+      speaking = false;
+      setStatus("");
+      reactor.set(listening ? "listening" : "idle");
+    };
+    utter.onend = done;
+    utter.onerror = done;
     speechSynthesis.speak(utter);
   } catch (err) { /* speech is a nicety, never a blocker */ }
 }
+
+// Barge-in: talk over him and he stops, like a person would.
+function stopSpeaking() {
+  if (!canSpeak) return false;
+  const wasSpeaking = speaking;
+  try { speechSynthesis.cancel(); } catch (err) { /* nothing to cancel */ }
+  speaking = false;
+  if (wasSpeaking) {
+    setStatus("");
+    reactor.set(listening ? "listening" : "idle");
+  }
+  return wasSpeaking;
+}
+
+addEventListener("keydown", function (event) {
+  if (event.key === "Escape") stopSpeaking();
+});
+el.answer.addEventListener("click", function () { stopSpeaking(); });
 
 // Browsers refuse audio until the user has interacted with the page.
 function unlockAudio() {
@@ -581,46 +820,130 @@ el.unlock.onclick = unlockAudio;
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recogniser = null;
 let listening = false;
+let listenMode = null;      // "push" (hold the button) or "wake" (always on)
+let awaitingCommand = false; // heard "Jarvis" with nothing after it
+
+// Chrome mishears the wake word about as often as it hears it.
+const WAKE_RE = /(?:^|[^a-z])(jarvis|jervis|jarvix|travis|charmless)\b[\s,.:;!?-]*/i;
+
+/** Pull the command out of a transcript. Returns null when the wake word is absent. */
+function extractCommand(transcript) {
+  const text = (transcript || "").trim();
+  if (!text) return null;
+  const match = WAKE_RE.exec(text);
+  if (!match) return null;
+  return text.slice(match.index + match[0].length).trim();
+}
 
 if (!Recognition) {
   el.mic.disabled = true;
   el.mic.title = "Speech recognition needs Google Chrome or Edge";
+  el.wake.disabled = true;
+  el.wake.title = "Wake word needs Google Chrome or Edge";
 } else {
   recogniser = new Recognition();
   recogniser.lang = "en-GB";
   recogniser.interimResults = true;
-  recogniser.continuous = false;
   recogniser.maxAlternatives = 1;
 
   recogniser.onstart = function () {
-    listening = true; el.mic.classList.add("on"); setStatus("● listening…", "live");
+    listening = true;
+    el.mic.classList.toggle("on", listenMode === "push");
+    el.wake.classList.toggle("hot", listenMode === "wake");
+    if (!speaking) reactor.set("listening");
+    setStatus(listenMode === "wake" ? "● waiting for “Jarvis…”" : "● listening…", "live");
   };
+
   recogniser.onresult = function (event) {
     let text = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) text += event.results[i][0].transcript;
-    el.input.value = text;
-    if (event.results[event.results.length - 1].isFinal) { stopListening(); submit(text); }
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      text += event.results[i][0].transcript;
+    }
+    const isFinal = event.results[event.results.length - 1].isFinal;
+
+    if (listenMode === "push") {
+      el.input.value = text;
+      if (isFinal) { stopListening(); submit(text); }
+      return;
+    }
+
+    // Wake mode. While he is speaking, only the wake word gets through — the
+    // microphone is also hearing him, so anything else would be his own voice.
+    const command = extractCommand(text);
+    if (command === null) {
+      if (isFinal && awaitingCommand && !speaking && text.trim()) {
+        awaitingCommand = false;
+        el.input.value = "";
+        submit(text.trim());
+      }
+      return;
+    }
+    if (!isFinal) return;
+
+    stopSpeaking();                       // heard "Jarvis" — that is a barge-in
+    if (command) {
+      awaitingCommand = false;
+      el.input.value = "";
+      submit(command);
+    } else {
+      awaitingCommand = true;             // just the name: listen for the order
+      setStatus("● yes, sir?", "live");
+    }
   };
+
   recogniser.onerror = function (event) {
+    if (event.error === "no-speech" || event.error === "aborted") return;  // routine in wake mode
+    const wasWake = listenMode === "wake";
     stopListening();
     setStatus(event.error === "not-allowed"
       ? "Microphone blocked — allow it via the lock icon in the address bar."
       : "Microphone error: " + event.error);
+    if (wasWake) el.wake.classList.remove("hot");
   };
-  recogniser.onend = function () { stopListening(); };
+
+  // Chrome ends continuous recognition on its own every so often. Restart it,
+  // or the wake word silently stops working after a minute.
+  recogniser.onend = function () {
+    listening = false;
+    if (listenMode === "wake") {
+      try { recogniser.start(); return; } catch (err) { /* fall through */ }
+    }
+    stopListening();
+  };
 }
 
 function stopListening() {
   listening = false;
+  listenMode = null;
+  awaitingCommand = false;
   el.mic.classList.remove("on");
+  el.wake.classList.remove("hot");
+  if (!speaking) reactor.set("idle");
   if (el.status.classList.contains("live")) setStatus("");
+}
+
+function startListening(mode) {
+  if (!recogniser) return;
+  listenMode = mode;
+  recogniser.continuous = mode === "wake";
+  try { recogniser.start(); } catch (err) { /* already running */ }
 }
 
 el.mic.onclick = function () {
   unlockAudio();
+  stopSpeaking();
   if (!recogniser) return;
-  if (listening) { recogniser.stop(); return; }
-  try { recogniser.start(); } catch (err) { /* already running */ }
+  if (listening) { listenMode = null; recogniser.stop(); return; }
+  startListening("push");
+};
+
+el.wake.onclick = function () {
+  unlockAudio();
+  if (!recogniser) return;
+  if (listenMode === "wake") { listenMode = null; recogniser.stop(); return; }
+  if (listening) recogniser.stop();
+  el.wake.classList.add("hot");
+  startListening("wake");
 };
 
 // ---------------------------------------------------------------------------
@@ -659,7 +982,9 @@ async function submit(text) {
   if (!text) return;
   el.input.value = "";
   el.send.disabled = true;
+  stopSpeaking();                      // a new question interrupts the old answer
   setStatus("● thinking…", "busy");
+  reactor.set("thinking");
   try {
     if (REMEMBER_RE.test(text)) await capture(text);
     else await ask(text);
@@ -668,11 +993,14 @@ async function submit(text) {
     showAnswer("I could not reach the server, sir. Is server.py still running?");
   } finally {
     el.send.disabled = false;
+    if (reactor.state === "thinking") reactor.set(listening ? "listening" : "idle");
   }
 }
 
 async function ask(text) {
-  const result = await post("/chat", { question: text, session: SESSION });
+  const result = await post("/chat", {
+    question: text, session: SESSION, dials: dials, model: chosenModel
+  });
   const answer = result.data;
   setStatus("");
   showAnswer(answer.answer, answer.sources);
@@ -750,6 +1078,25 @@ fetch("/api/status").then(function (r) { return r.json(); }).then(function (stat
   el.badge.textContent = labels[status.backend] || status.backend;
   el.badge.classList.toggle("warn", status.backend === "offline");
 
+  const models = status.models || [];
+  if (!models.length) {
+    el.modelPick.innerHTML = '<option>unavailable offline</option>';
+    el.modelPick.disabled = true;
+  } else {
+    if (!models.some(function (m) { return m.id === chosenModel; })) {
+      chosenModel = status.defaultModel || models[0].id;
+    }
+    models.forEach(function (model) {
+      MODEL_NOTES[model.id] = model.note;
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.label;
+      option.selected = model.id === chosenModel;
+      el.modelPick.appendChild(option);
+    });
+    paintModelNote();
+  }
+
   (status.suggestions || []).forEach(function (text) {
     const button = document.createElement("button");
     button.type = "button";
@@ -770,7 +1117,13 @@ fetch("/api/status").then(function (r) { return r.json(); }).then(function (stat
 // Open at a flattering angle rather than staring down the Z axis.
 setTimeout(function () { graph.cameraPosition({ x: 110, y: 75, z: 390 }, { x: 0, y: 0, z: 0 }, 2200); }, 400);
 
-window.JARVIS = { graph: graph, byId: byId, submit: submit, selectNode: selectNode };
+window.JARVIS = {
+  graph: graph, byId: byId, submit: submit, selectNode: selectNode,
+  extractCommand: extractCommand, stopSpeaking: stopSpeaking, reactor: reactor,
+  dials: function () { return dials; },
+  model: function () { return chosenModel; },
+  speaking: function () { return speaking; }
+};
 };
 </script>
 </body>

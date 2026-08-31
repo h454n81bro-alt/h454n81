@@ -213,6 +213,74 @@ def main():
             check.that("an unrelated capture is still born and flown to",
                        page.inner_text("#pTitle").lower().startswith("prompt packs"))
 
+            # -- the reactor -----------------------------------------------
+            check.that("reactor is on the page and idle",
+                       page.evaluate("document.getElementById('reactor').className") == "idle")
+            check.that("reactor exposes its state machine", page.evaluate(
+                "typeof window.JARVIS.reactor.set === 'function' && "
+                "typeof window.JARVIS.reactor.kick === 'function'"))
+            page.evaluate("window.JARVIS.reactor.set('thinking')")
+            check.that("reactor switches state cleanly", page.evaluate(
+                "document.getElementById('reactor').className") == "thinking")
+            page.evaluate("window.JARVIS.reactor.set('speaking'); window.JARVIS.reactor.kick()")
+            check.that("a voice kick lands on the core", page.evaluate(
+                "document.querySelector('#reactor .core').classList.contains('hit')"))
+            page.evaluate("window.JARVIS.reactor.set('idle')")
+            check.that("only one state class at a time", page.evaluate(
+                "document.getElementById('reactor').classList.length") == 1)
+
+            # -- wake word parsing (the mic itself is absent in headless) ----
+            wake_cases = [
+                ("jarvis what is the wholesale margin", "what is the wholesale margin"),
+                ("Jarvis, remember that the roaster arrives", "remember that the roaster arrives"),
+                ("hey Jarvis. when do we roast?", "when do we roast?"),
+                ("jarvis", ""),                       # name alone -> await the order
+                ("what is the wholesale margin", None),   # no wake word -> ignored
+                ("", None),
+                ("the jarvison protocol", None),      # must not match inside a word
+            ]
+            wake_ok = True
+            for said, expected in wake_cases:
+                got = page.evaluate("window.JARVIS.extractCommand(%s)" % json.dumps(said))
+                if got != expected:
+                    wake_ok = False
+                    print("        wake: %r -> %r, expected %r" % (said, got, expected))
+            check.that("wake word extracts the command (%d cases)" % len(wake_cases), wake_ok)
+            check.that("common mishearings still wake him", page.evaluate(
+                "window.JARVIS.extractCommand('jervis when do we roast')") == "when do we roast")
+
+            # -- barge-in ---------------------------------------------------
+            check.that("barge-in is wired to Escape and to stopSpeaking()", page.evaluate(
+                "typeof window.JARVIS.stopSpeaking === 'function'"))
+            check.that("stopSpeaking is safe when he is silent",
+                       page.evaluate("window.JARVIS.stopSpeaking()") is False)
+            page.keyboard.press("Escape")
+            check.that("Escape does not throw or break the page",
+                       page.evaluate("window.JARVIS.speaking()") is False)
+
+            # -- personality dials + model picker ---------------------------
+            page.click("#gear")
+            check.that("settings panel opens", page.is_visible("#settings"))
+            check.that("three dials rendered", page.locator("#settings input[type=range]").count() == 3)
+            check.that("dials default to the butler", page.evaluate(
+                "JSON.stringify(window.JARVIS.dials())")
+                == '{"wit":75,"brevity":55,"formality":70}')
+            page.fill("#d-wit", "0")
+            page.dispatch_event("#d-wit", "input")
+            check.that("moving a dial updates state and its hint",
+                       page.evaluate("window.JARVIS.dials().wit") == 0
+                       and page.inner_text("#h-wit") == "straight-faced")
+            check.that("dial value is persisted to localStorage", page.evaluate(
+                "JSON.parse(localStorage.getItem('jarvis.prefs')).dials.wit") == 0)
+            page.click("#resetDials")
+            check.that("reset restores the butler",
+                       page.evaluate("window.JARVIS.dials().wit") == 75)
+            check.that("model picker reflects the backend", page.evaluate(
+                "document.getElementById('modelPick').disabled") is True,
+                "offline backend must not offer a model")
+            page.click("#gear")
+            check.that("settings panel closes", not page.is_visible("#settings"))
+
             # -- voice guards ----------------------------------------------
             check.that("speech synthesis is wired up",
                        page.evaluate("'speechSynthesis' in window"))
@@ -221,6 +289,10 @@ def main():
                            "(window.SpeechRecognition||window.webkitSpeechRecognition) "
                            "? !document.getElementById('mic').disabled "
                            ": document.getElementById('mic').disabled"))
+            check.that("wake button degrades the same way", page.evaluate(
+                "(window.SpeechRecognition||window.webkitSpeechRecognition) "
+                "? !document.getElementById('wake').disabled "
+                ": document.getElementById('wake').disabled"))
 
             check.that("still no console errors after the whole flow",
                        not errors, errors[:3])
