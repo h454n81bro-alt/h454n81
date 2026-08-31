@@ -313,6 +313,176 @@ class StubbedJarvis(TempVault):
         self.addCleanup(setattr, server, "call_anthropic", original)
 
 
+class TestResearchTrigger(unittest.TestCase):
+    """Research is an explicit order, so the trigger is anchored to the start."""
+
+    def test_explicit_orders_are_research(self):
+        for question, topic in [
+            ("research the specialty coffee market", "the specialty coffee market"),
+            ("Jarvis, research oat milk pricing", "oat milk pricing"),
+            ("look up the current price of green coffee", "the current price of green coffee"),
+            ("search the web for espresso machine reviews", "espresso machine reviews"),
+            ("google robusta futures", "robusta futures"),
+            ("what is the latest on coffee tariffs", "coffee tariffs"),
+            ("can you research arabica yields", "arabica yields"),
+        ]:
+            self.assertEqual(server.extract_research_topic(question), topic, question)
+            self.assertTrue(server.is_research_query(question), question)
+
+    def test_notes_questions_are_never_hijacked(self):
+        """The third trigger in this project; the first two both over-matched.
+
+        A notes question that merely contains "research" or "latest" must not be
+        sent to the web.
+        """
+        for question in ["what do my notes say about market research",
+                         "how much do we spend on research",
+                         "what is our pricing strategy",
+                         "what is the latest gross margin in my notes",
+                         "when do we roast",
+                         "what was I doing yesterday",
+                         "remember that I should research oat milk"]:
+            self.assertIsNone(server.extract_research_topic(question), question)
+            self.assertFalse(server.is_research_query(question), question)
+
+    def test_an_order_with_no_topic_is_not_research(self):
+        for question in ["research", "look up", "google"]:
+            self.assertIsNone(server.extract_research_topic(question), question)
+
+
+class TestWebSearchWiring(unittest.TestCase):
+
+    def test_tool_version_follows_the_model(self):
+        """Dynamic filtering is a 400 on models that lack it — Haiku 4.5 included."""
+        for model in ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]:
+            self.assertEqual(server.web_search_tool(model)["type"], "web_search_20260209", model)
+        for model in ["claude-haiku-4-5", "something-unknown"]:
+            self.assertEqual(server.web_search_tool(model)["type"], "web_search_20250305", model)
+
+    def test_every_picker_model_gets_a_usable_tool(self):
+        for model in server.MODEL_IDS:
+            tool = server.web_search_tool(model)
+            self.assertEqual(tool["name"], "web_search")
+            self.assertIn("max_uses", tool)
+
+    def test_citations_come_from_search_results_and_text(self):
+        blocks = [
+            {"type": "web_search_tool_result", "content": [
+                {"title": "ICE Coffee C", "url": "https://ice.com/coffee"},
+                {"title": "Barchart", "url": "https://barchart.com/kc"},
+            ]},
+            {"type": "text", "text": "About $3.11.", "citations": [
+                {"title": "Reuters", "url": "https://reuters.com/coffee"},
+                {"title": "Dup", "url": "https://ice.com/coffee"},   # already seen
+            ]},
+        ]
+        found = server.extract_citations(blocks)
+        self.assertEqual([c["url"] for c in found],
+                         ["https://ice.com/coffee", "https://barchart.com/kc",
+                          "https://reuters.com/coffee"])
+
+    def test_a_search_error_is_not_read_as_a_result(self):
+        """On error the block's content is an object, not a list — indexing it blindly
+        would turn a failure into a bogus source."""
+        blocks = [{"type": "web_search_tool_result",
+                   "content": {"type": "web_search_tool_result_error",
+                               "error_code": "max_uses_exceeded"}}]
+        self.assertEqual(server.extract_citations(blocks), [])
+
+    def test_citation_extraction_survives_junk(self):
+        for junk in [None, [], [None], ["not a dict"], [{"type": "text"}],
+                     [{"type": "web_search_tool_result", "content": None}],
+                     [{"type": "text", "citations": None}]]:
+            self.assertEqual(server.extract_citations(junk), [])
+
+    def test_sources_trailer_is_stripped_from_the_spoken_answer(self):
+        text, citations = server.split_sources(
+            "Roughly $3.11 a pound, sir.\n\nSOURCES: https://ice.com/x https://barchart.com/y")
+        self.assertNotIn("SOURCES", text)
+        self.assertEqual(text, "Roughly $3.11 a pound, sir.")
+        self.assertEqual([c["url"] for c in citations],
+                         ["https://ice.com/x", "https://barchart.com/y"])
+
+    def test_inline_links_are_used_when_there_is_no_trailer(self):
+        text, citations = server.split_sources(
+            "See [Barchart](https://barchart.com/kc) for that, sir.")
+        self.assertEqual([c["url"] for c in citations], ["https://barchart.com/kc"])
+        self.assertEqual(citations[0]["title"], "Barchart")
+
+    def test_a_spoken_answer_never_keeps_a_markdown_link(self):
+        self.assertEqual(server.tidy("See [Python.org](https://python.org) for it, sir."),
+                         "See Python.org for it, sir.")
+
+
+class TestResearchApiRequest(unittest.TestCase):
+    """The API research path, which needs a real key to run for real."""
+
+    def run_with(self, responses):
+        sent = []
+        queue = list(responses)
+
+        def fake(config, payload, timeout):
+            sent.append(payload)
+            return queue.pop(0)
+
+        original = server._anthropic_request
+        server._anthropic_request = fake
+        try:
+            text, citations = server.call_anthropic_research(
+                {"api_key": "k"}, "system", [{"role": "user", "content": "research coffee"}],
+                "claude-opus-5")
+        finally:
+            server._anthropic_request = original
+        return text, citations, sent
+
+    def test_request_declares_the_search_tool(self):
+        text, citations, sent = self.run_with([{
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "web_search_tool_result",
+                 "content": [{"title": "ICE", "url": "https://ice.com/x"}]},
+                {"type": "text", "text": "About $3.11 a pound, sir."},
+            ],
+        }])
+        self.assertEqual(text, "About $3.11 a pound, sir.")
+        self.assertEqual([c["url"] for c in citations], ["https://ice.com/x"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["tools"][0]["type"], "web_search_20260209")
+        self.assertEqual(sent[0]["model"], "claude-opus-5")
+        self.assertIn("max_tokens", sent[0])
+
+    def test_pause_turn_is_followed_to_completion(self):
+        """A long search pauses mid-turn; stopping there loses the answer."""
+        text, citations, sent = self.run_with([
+            {"stop_reason": "pause_turn",
+             "content": [{"type": "web_search_tool_result",
+                          "content": [{"title": "A", "url": "https://a.com"}]}]},
+            {"stop_reason": "end_turn",
+             "content": [{"type": "text", "text": "The finding, sir."}]},
+        ])
+        self.assertEqual(text, "The finding, sir.")
+        self.assertEqual([c["url"] for c in citations], ["https://a.com"])
+        self.assertEqual(len(sent), 2, "the paused turn must be handed back")
+        self.assertEqual(sent[1]["messages"][-1]["role"], "assistant")
+
+    def test_a_refusal_is_surfaced_not_swallowed(self):
+        original = server._anthropic_request
+
+        def refuse(config, payload, timeout):
+            raise server.BackendError("I must decline that one, sir.")
+
+        server._anthropic_request = refuse
+        try:
+            with self.assertRaises(server.BackendError):
+                server.call_anthropic_research({"api_key": "k"}, "s", [], "claude-opus-5")
+        finally:
+            server._anthropic_request = original
+
+    def test_an_empty_search_is_an_error_not_a_blank_answer(self):
+        with self.assertRaises(server.BackendError):
+            self.run_with([{"stop_reason": "end_turn", "content": []}])
+
+
 class TestTimeMachineDates(unittest.TestCase):
     """Pure date parsing — no server, no notes, just the clock."""
 
@@ -592,6 +762,19 @@ class TestTimeMachineActivity(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["kind"], "remember")
         self.assertEqual(entries[0]["nodes"], [result["node"]["id"]])
+
+    def test_research_offline_admits_it_cannot_reach_the_web(self):
+        result = self.jarvis.ask("research the price of green coffee", "s1")
+        self.assertEqual(result["mode"], "idle")
+        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["nodes"], [], "research must never move the galaxy")
+        self.assertIn("sir", result["answer"])
+
+    def test_research_shows_up_in_the_time_machine(self):
+        self.jarvis.log_activity("research", "s1", "green arabica prices", [])
+        self.jarvis.ask("what is our wholesale gross margin", "s1")
+        result = self.jarvis.ask("what was I doing today?", "s1")
+        self.assertIn("1 topic researched", result["answer"])
 
     def test_empty_day_is_answered_honestly(self):
         result = self.jarvis.ask("what did I do yesterday?", "s1")

@@ -41,6 +41,24 @@ PLACEHOLDER_KEYS = {"", "PUT-YOUR-KEY-HERE", "sk-ant-xxx", "your-key-here"}
 TOP_K = 6              # notes handed to the model
 FLY_THRESHOLD = 3      # below this the question isn't really about the notes
 CONTEXT_WEIGHT = 0.45  # how much the previous question counts when resolving "that"
+WEB_SEARCH_MAX_USES = 5
+
+# Dynamic filtering exists on these; anything else (Haiku 4.5, older) gets the
+# basic search tool, which every model accepts.
+DYNAMIC_SEARCH_MODELS = {
+    "claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+}
+
+# Research is an explicit order, so the trigger is anchored to the start of the
+# question. "What do my notes say about market research" must stay a notes
+# question — the word appearing somewhere in the middle is not an instruction.
+_RESEARCH_TRIGGER = re.compile(
+    r"^(?:jarvis[,\s]+)?(?:please\s+|can you\s+|could you\s+|go\s+|"
+    r"i want you to\s+|i'd like you to\s+)*"
+    r"(research|look up|look into|search (?:the )?(?:web|internet|online)(?:\s+for)?"
+    r"|google|find out about|what(?:'?s| is| are) the latest (?:on|in)"
+    r"|latest news on)\b", re.I)
 CAPTURE_LINK_MIN = 4.0 # score a captured note needs to wire itself to an existing one
 CLUSTER_THRESHOLD = 4  # 4+ sources: light the cluster instead of diving to one
 MAX_HISTORY = 8        # messages (4 exchanges) kept per session
@@ -127,6 +145,17 @@ def compose_system_prompt(dials=None):
     return "%s\n\nCharacter: %s %s\n\nLength: %s\n\n%s" % (
         PROMPT_HEAD, formality, wit, brevity, PROMPT_TAIL)
 
+
+RESEARCH_BRIEF = """The user has asked you to research something on the WEB. This is not a question about their notes — do not answer it from the notes, and do not pretend the notes cover it.
+
+Search, then give them the finding in your own voice, in two or three sentences. Lead with the answer, not with how you found it. Do not list or recite the source URLs: they are already displayed on screen beside your reply. If the search turns up nothing solid, say so plainly rather than filling the gap with something plausible."""
+
+# The API backend gets its sources from structured web_search_tool_result blocks.
+# The CLI backend has no such channel, so it is asked for a trailer that is parsed
+# off and never spoken.
+CLI_SOURCE_TRAILER = """
+
+When you have finished your reply, add one final line beginning with SOURCES: followed by the URLs you actually used, separated by spaces. That line is stripped out before your reply is read aloud — it exists only so the sources can be displayed on screen."""
 
 SYSTEM_PROMPT = compose_system_prompt()
 
@@ -226,6 +255,21 @@ def extract_time_range(question, now=None):
         return {"start": start, "end": end, "label": candidate.strftime("%-d %B")}
 
     return None
+
+
+def extract_research_topic(question):
+    """The subject of an explicit research order, or None if this isn't one."""
+    question = (question or "").strip()
+    match = _RESEARCH_TRIGGER.match(question)
+    if not match:
+        return None
+    topic = question[match.end():].strip(" ,:?.\u2014-")
+    topic = re.sub(r"^(?:for|about|on|into|up)\s+", "", topic, flags=re.I).strip()
+    return topic or None
+
+
+def is_research_query(question):
+    return extract_research_topic(question) is not None
 
 
 def is_time_machine_query(question, now=None):
@@ -398,20 +442,12 @@ def build_context(graph, ranked):
 # Backends
 # ---------------------------------------------------------------------------
 
-def call_anthropic(config, system, messages, timeout=60, model=None):
-    """Anthropic Messages API over stdlib urllib.
+def _anthropic_request(config, payload, timeout):
+    """One raw Messages API round trip, with the errors phrased in character.
 
     The project is stdlib-only by design (no pip installs), so this speaks raw HTTP
     rather than using the official SDK.
     """
-    payload = {
-        "model": model or config.get("model") or DEFAULT_MODEL,
-        "max_tokens": 2048,
-        "system": system,
-        "messages": messages,
-        # Short, well-mannered answers: adaptive thinking stays on, effort comes down.
-        "output_config": {"effort": "low"},
-    }
     request = urllib.request.Request(
         API_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -437,12 +473,161 @@ def call_anthropic(config, system, messages, timeout=60, model=None):
 
     if body.get("stop_reason") == "refusal":
         raise BackendError("I must decline that one, sir.")
+    return body
+
+
+def call_anthropic(config, system, messages, timeout=60, model=None):
+    body = _anthropic_request(config, {
+        "model": model or config.get("model") or DEFAULT_MODEL,
+        "max_tokens": 2048,
+        "system": system,
+        "messages": messages,
+        # Short, well-mannered answers: adaptive thinking stays on, effort comes down.
+        "output_config": {"effort": "low"},
+    }, timeout)
 
     text = "".join(block.get("text", "") for block in body.get("content", [])
                    if block.get("type") == "text").strip()
     if not text:
         raise BackendError("The model returned nothing at all, sir. Most unlike it.")
     return text
+
+
+def web_search_tool(model):
+    """The search tool version this model actually accepts.
+
+    Dynamic filtering only exists on the newer models; asking for it on, say,
+    Haiku 4.5 is a 400. The basic tool works everywhere, so it is the fallback
+    for anything not on the list.
+    """
+    kind = "web_search_20260209" if model in DYNAMIC_SEARCH_MODELS else "web_search_20250305"
+    return {"type": kind, "name": "web_search", "max_uses": WEB_SEARCH_MAX_USES}
+
+
+def extract_citations(blocks):
+    """Pull (title, url) out of a response that used web search.
+
+    Sources turn up in two places: the search tool's own result blocks, and the
+    citations attached to the text Claude writes. Take both, keyed by URL.
+    """
+    found, seen = [], set()
+
+    def add(title, url):
+        if not url or url in seen:
+            return
+        seen.add(url)
+        found.append({"title": (title or url)[:160], "url": url})
+
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "web_search_tool_result":
+            results = block.get("content")
+            # A search error comes back as an object where a success is a list —
+            # branch on that before indexing, or an error reads as one bad result.
+            if isinstance(results, list):
+                for item in results:
+                    if isinstance(item, dict):
+                        add(item.get("title"), item.get("url"))
+        elif block.get("type") == "text":
+            for citation in block.get("citations") or []:
+                if isinstance(citation, dict):
+                    add(citation.get("title") or citation.get("cited_text"), citation.get("url"))
+    return found
+
+
+def call_anthropic_research(config, system, messages, model, timeout=180, max_rounds=4):
+    """Messages API with the web search server tool, following pause_turn."""
+    conversation = list(messages)
+    citations, text = [], ""
+
+    for _ in range(max_rounds):
+        body = _anthropic_request(config, {
+            "model": model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": conversation,
+            "tools": [web_search_tool(model)],
+            "output_config": {"effort": "medium"},
+        }, timeout)
+
+        blocks = body.get("content", [])
+        citations.extend(extract_citations(blocks))
+        found = "".join(b.get("text", "") for b in blocks
+                        if isinstance(b, dict) and b.get("type") == "text").strip()
+        if found:
+            text = found
+
+        # A long search can pause mid-turn; hand the work straight back to continue.
+        if body.get("stop_reason") != "pause_turn":
+            break
+        conversation = conversation + [{"role": "assistant", "content": blocks}]
+
+    if not text:
+        raise BackendError("The search came back with nothing, sir.")
+
+    seen, unique = set(), []
+    for citation in citations:
+        if citation["url"] not in seen:
+            seen.add(citation["url"])
+            unique.append(citation)
+    return text, unique[:8]
+
+
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BARE_URL = re.compile(r"(?<![(\]])\bhttps?://[^\s<>\])]+")
+
+
+def extract_links(text):
+    """Sources out of CLI output, which writes markdown rather than citation blocks."""
+    found, seen = [], set()
+    for title, url in _MD_LINK.findall(text or ""):
+        url = url.rstrip(".,;")
+        if url not in seen:
+            seen.add(url)
+            found.append({"title": title.strip()[:160], "url": url})
+    for url in _BARE_URL.findall(text or ""):
+        url = url.rstrip(".,;")
+        if url not in seen:
+            seen.add(url)
+            found.append({"title": url[:160], "url": url})
+    return found[:8]
+
+
+_SOURCES_LINE = re.compile(r"^[ \t]*SOURCES[ \t]*:[ \t]*(.*)$", re.I | re.M)
+
+
+def split_sources(text):
+    """Take the SOURCES: trailer off CLI output. It must never reach the speaker."""
+    citations = []
+    match = _SOURCES_LINE.search(text or "")
+    if match:
+        citations = extract_links(match.group(1))
+        text = (text[:match.start()] + text[match.end():]).strip()
+    if not citations:
+        citations = extract_links(text)      # some replies just link inline instead
+    return text, citations
+
+
+def call_claude_cli_research(system, question, timeout=300):
+    """Research on a Claude Code subscription, using the CLI's own WebSearch tool."""
+    prompt = "%s%s\n\nUser: %s\n\nSearch the web, then reply in character." % (
+        system, CLI_SOURCE_TRAILER, question)
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--allowedTools", "WebSearch"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise BackendError("The claude CLI is not on PATH, sir.")
+    except subprocess.TimeoutExpired:
+        raise BackendError("The search took too long, sir. Do try a narrower question.")
+    if result.returncode != 0:
+        raise BackendError("claude CLI failed: %s" % (result.stderr or "").strip()[:300])
+    text = result.stdout.strip()
+    if not text:
+        raise BackendError("The search came back with nothing, sir.")
+    return split_sources(text)
 
 
 def call_claude_cli(system, messages, timeout=180, model=None):
@@ -599,6 +784,10 @@ class Jarvis(object):
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
 
+        topic = extract_research_topic(question)
+        if topic:
+            return self._research_answer(question, topic, session_id, dials, model)
+
         if is_time_machine_query(question):
             time_range = extract_time_range(question)
             if time_range is None:
@@ -657,12 +846,50 @@ class Jarvis(object):
             "model": model if self.backend != "offline" else None,
         }
 
+    # -- research -----------------------------------------------------------
+    def _research_answer(self, question, topic, session_id, dials, model):
+        if self.backend == "offline":
+            answer = ("I have no way to reach the outside world in this state, sir — "
+                      "no API key and no CLI. The notes I can do; the internet I cannot.")
+            return {"answer": answer, "nodes": [], "sources": [], "citations": [],
+                    "backend": self.backend, "mode": "idle", "topic": topic, "model": None}
+
+        model = resolve_model(model, self.config)
+        system = compose_system_prompt(dials) + "\n\n" + RESEARCH_BRIEF
+        with self.lock:
+            history = list(self.history(session_id))
+
+        try:
+            if self.backend == "api":
+                messages = history + [{"role": "user", "content": question}]
+                answer, citations = call_anthropic_research(
+                    self.config, system, messages, model)
+            else:
+                answer, citations = call_claude_cli_research(system, question)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [], "citations": [],
+                    "backend": self.backend, "mode": "error", "error": True, "topic": topic}
+
+        answer = tidy(answer)
+
+        with self.lock:
+            self.remember_turn(session_id, question, answer)
+        self.log_activity("research", session_id, topic, [])
+
+        # Research is about the world, not the vault — the galaxy stays put.
+        return {
+            "answer": answer, "nodes": [], "sources": [], "citations": citations,
+            "backend": self.backend, "mode": "research", "topic": topic,
+            "model": model if self.backend != "offline" else None,
+        }
+
     # -- time machine -------------------------------------------------------
     def _time_machine_answer(self, question, time_range, session_id, dials, model):
         entries = [e for e in self.read_activity()
                   if time_range["start"] <= e["ts"] < time_range["end"]]
         chats = [e for e in entries if e["kind"] == "chat"]
         captures = [e for e in entries if e["kind"] == "remember"]
+        research = [e for e in entries if e["kind"] == "research"]
 
         # Weight a captured note above a note merely mentioned in passing — it is
         # the stronger signal of what the day was actually about.
@@ -678,7 +905,7 @@ class Jarvis(object):
                    if 0 <= nid < len(self.graph["nodes"])][:8]
         labels = [self.graph["nodes"][nid]["label"] for nid in node_ids]
 
-        if not chats and not captures:
+        if not chats and not captures and not research:
             answer = "Nothing on record for %s, sir. A quiet day, or an untracked one." % time_range["label"]
             with self.lock:
                 self.remember_turn(session_id, question, answer)
@@ -688,12 +915,15 @@ class Jarvis(object):
 
         sample_questions = [e["text"] for e in chats][:4]
         capture_titles = [e["text"] for e in captures][:4]
+        research_topics = [e["text"] for e in research][:4]
         summary = "\n".join([
             "Activity log for %s:" % time_range["label"],
             "- %d question(s) asked%s" % (
                 len(chats), (": " + "; ".join(sample_questions)) if sample_questions else ""),
             "- %d note(s) captured%s" % (
                 len(captures), (": " + "; ".join(capture_titles)) if capture_titles else ""),
+            "- %d topic(s) researched on the web%s" % (
+                len(research), (": " + "; ".join(research_topics)) if research_topics else ""),
             "- notes touched: %s" % (", ".join(labels) if labels else "none"),
         ])
 
@@ -712,7 +942,7 @@ class Jarvis(object):
             elif self.backend == "cli":
                 answer = call_claude_cli(system, messages, model=model)
             else:
-                answer = self._time_machine_offline(time_range, chats, captures, labels)
+                answer = self._time_machine_offline(time_range, chats, captures, research, labels)
         except BackendError as exc:
             return {"answer": str(exc), "nodes": [], "sources": [], "backend": self.backend,
                     "mode": "error", "error": True}
@@ -731,12 +961,14 @@ class Jarvis(object):
         }
 
     @staticmethod
-    def _time_machine_offline(time_range, chats, captures, labels):
+    def _time_machine_offline(time_range, chats, captures, research, labels):
         bits = []
         if chats:
             bits.append("%d question%s asked" % (len(chats), "" if len(chats) == 1 else "s"))
         if captures:
             bits.append("%d note%s captured" % (len(captures), "" if len(captures) == 1 else "s"))
+        if research:
+            bits.append("%d topic%s researched" % (len(research), "" if len(research) == 1 else "s"))
         body = " and ".join(bits) if bits else "nothing notable"
         tail = (", mostly around %s" % ", ".join(labels[:3])) if labels else ""
         return "On %s, sir: %s%s." % (time_range["label"], body, tail)
@@ -803,6 +1035,7 @@ def tidy(answer):
     answer = re.sub(r"\*\*(.+?)\*\*", r"\1", answer)
     answer = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", answer)
     answer = re.sub(r"`([^`]+)`", r"\1", answer)
+    answer = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r"\1", answer)
     return re.sub(r"\n{2,}", "\n", answer).strip()
 
 

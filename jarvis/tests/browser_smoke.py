@@ -294,6 +294,27 @@ def main():
                 "? !document.getElementById('wake').disabled "
                 ": document.getElementById('wake').disabled"))
 
+            # -- research: source chips render and open externally -----------
+            check.that("domain labels are derived from the URL", page.evaluate(
+                "window.JARVIS.domainOf('https://www.barchart.com/futures/quotes/kc')")
+                == "barchart.com")
+            check.that("a malformed URL does not throw", page.evaluate(
+                "window.JARVIS.domainOf('not a url')") is not None)
+            page.evaluate("""window.JARVIS.showAnswer(
+                'Roughly $3.11 a pound, sir.', [],
+                [{title: 'ICE Coffee C', url: 'https://www.ice.com/coffee'},
+                 {title: 'Barchart', url: 'https://barchart.com/kc'}])""")
+            check.that("source chips are rendered for research",
+                       page.locator("#answer .weblinks a").count() == 2)
+            check.that("chips show the domain, not the raw URL",
+                       page.locator("#answer .weblinks a").first.inner_text() == "ice.com")
+            check.that("chips open in a new tab, safely", page.evaluate(
+                "(function(a){return a.target==='_blank' && a.rel.indexOf('noopener')>=0;})"
+                "(document.querySelector('#answer .weblinks a'))"))
+            check.that("an answer with no citations renders no chip row", page.evaluate(
+                "(function(){window.JARVIS.showAnswer('Plain answer, sir.', [], []);"
+                "return document.querySelectorAll('#answer .weblinks a').length;})()") == 0)
+
             # -- Time Machine: what was I doing today? -----------------------
             page.fill("#q", "what was I doing today?")
             page.press("#q", "Enter")

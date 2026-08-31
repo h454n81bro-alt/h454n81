@@ -202,6 +202,13 @@
     opacity: 0; transform: translateY(10px); transition: opacity .35s, transform .35s;
   }
   #answer.show { opacity: 1; transform: none; }
+  #answer .weblinks { margin-top: 11px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #answer .weblinks a {
+    font-size: 11.5px; padding: 3px 10px; border-radius: 999px; text-decoration: none;
+    color: #a9c4e8; border: 1px solid var(--line); background: rgba(255,255,255,.04);
+  }
+  #answer .weblinks a::before { content: "↗ "; opacity: .55; }
+  #answer .weblinks a:hover { color: #fff; border-color: var(--accent); }
   #answer .cited {
     display: block; margin-top: 10px; font-size: 11px; color: var(--dim);
     letter-spacing: .04em;
@@ -954,7 +961,15 @@ function setStatus(text, kind) {
   el.status.className = text ? (kind || "") : "";
 }
 
-function showAnswer(text, sources) {
+function domainOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (err) {
+    return String(url).slice(0, 40);
+  }
+}
+
+function showAnswer(text, sources, citations) {
   el.answer.textContent = text;
   if (sources && sources.length) {
     const cite = document.createElement("span");
@@ -962,6 +977,21 @@ function showAnswer(text, sources) {
     cite.textContent = "From " + sources.slice(0, 3).join(" · ")
                      + (sources.length > 3 ? " +" + (sources.length - 3) + " more" : "");
     el.answer.appendChild(cite);
+  }
+  // Web research: the sources go on screen so he doesn't have to read URLs aloud.
+  if (citations && citations.length) {
+    const box = document.createElement("div");
+    box.className = "weblinks";
+    citations.slice(0, 6).forEach(function (source) {
+      const link = document.createElement("a");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.title = source.title || source.url;
+      link.textContent = domainOf(source.url);
+      box.appendChild(link);
+    });
+    el.answer.appendChild(box);
   }
   el.answer.classList.add("show");
 }
@@ -985,6 +1015,10 @@ async function submit(text) {
   stopSpeaking();                      // a new question interrupts the old answer
   setStatus("● thinking…", "busy");
   reactor.set("thinking");
+  // Research can take half a minute; don't leave "thinking…" sitting there mute.
+  const stillWorking = setTimeout(function () {
+    if (reactor.state === "thinking") setStatus("● still working…", "busy");
+  }, 6000);
   try {
     if (REMEMBER_RE.test(text)) await capture(text);
     else await ask(text);
@@ -992,6 +1026,7 @@ async function submit(text) {
     setStatus("");
     showAnswer("I could not reach the server, sir. Is server.py still running?");
   } finally {
+    clearTimeout(stillWorking);
     el.send.disabled = false;
     if (reactor.state === "thinking") reactor.set(listening ? "listening" : "idle");
   }
@@ -1003,7 +1038,7 @@ async function ask(text) {
   });
   const answer = result.data;
   setStatus("");
-  showAnswer(answer.answer, answer.sources);
+  showAnswer(answer.answer, answer.sources, answer.citations);
   speak(answer.answer);
 
   // Prompt 4: prove where the answer came from.
@@ -1120,6 +1155,7 @@ setTimeout(function () { graph.cameraPosition({ x: 110, y: 75, z: 390 }, { x: 0,
 window.JARVIS = {
   graph: graph, byId: byId, submit: submit, selectNode: selectNode,
   extractCommand: extractCommand, stopSpeaking: stopSpeaking, reactor: reactor,
+  showAnswer: showAnswer, domainOf: domainOf,
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }

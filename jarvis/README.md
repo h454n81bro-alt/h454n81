@@ -26,6 +26,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Personality      wit / brevity / formality dials
   beyond    Model hot-swap   Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8, Fable 5
   beyond    Time Machine     "what was I doing last Tuesday?"
+  beyond    Web research     "research X" — searched, summarised, sources on a card
 ```
 
 ## Quick start
@@ -78,6 +79,31 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## Web research
+
+*"Jarvis, research the current price of green arabica"* — he searches the web, answers
+in his own voice, and puts the sources on a card beside the reply. The galaxy does not
+move: research is about the world, not about your vault.
+
+It uses the search tool already available through the brain you configured — the
+Messages API's `web_search` server tool, or the `claude` CLI's own WebSearch. **No new
+dependency, no extra key, no third-party service.** Offline mode says so plainly rather
+than guessing.
+
+Two details worth knowing:
+
+- **The tool version follows the model.** Dynamic filtering (`web_search_20260209`) only
+  exists on Opus 5, Fable 5, Opus 4.8 and Sonnet 5; asking for it on Haiku 4.5 is a 400.
+  Pick Haiku in the model dropdown and the request quietly falls back to the basic search
+  tool, which every model accepts.
+- **He never reads URLs aloud.** Every answer is spoken, and a spoken URL is noise. The
+  sources are parsed out of the reply and rendered as chips; the spoken text keeps only
+  the finding.
+
+Triggering is deliberately strict — an explicit order at the *start* of the sentence
+("research…", "look up…", "search the web for…", "what's the latest on…"). *"What do my
+notes say about market research"* stays a notes question.
 
 ## Time Machine
 
@@ -153,6 +179,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - Interrupt him mid-answer with **Escape**.
 - Drag **Wit** to 0 and **Brevity** to 100, then ask the same question again.
 - Ask a few real questions, then **"What was I doing today?"**
+- **"Research the current price of green coffee"** — and watch the source chips appear.
 
 ## How it works
 
@@ -187,16 +214,18 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 97 tests, standard library only
+python3 tests/test_jarvis.py          # 114 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
 questions and the guard that stops an old topic being dragged into a new one), the
 composed personality prompt, the model allowlist, Time Machine's date parsing (with
 a fixed clock, so "last Tuesday" and "this week" have one correct answer) and its
-trigger detection, the activity log and its trimming, session history, `/remember`,
-the HTTP surface, the Anthropic request shape, and the API-key containment described
-above.
+trigger detection, the activity log and its trimming, web research (trigger anchoring,
+per-model search tool version, citation extraction including the error-shaped result
+that must not be read as a source, and `pause_turn` continuation), session history,
+`/remember`, the HTTP surface, the Anthropic request shape, and the API-key
+containment described above.
 
 An optional end-to-end test drives the real page in real Chromium:
 
@@ -205,12 +234,13 @@ pip install playwright && playwright install chromium
 python3 tests/browser_smoke.py --shot /tmp/jarvis.png
 ```
 
-54 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
+60 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
 sources, small talk moves nothing, a new star is born and written to disk, the reactor
 changes state and kicks, the wake word parses commands (including mishearings and
 non-matches), barge-in is safe when he is silent, the dials move and persist, a Time
 Machine question summarises the day's real activity while an empty day is answered
-honestly, and the console stays free of errors. It runs against a throwaway copy of
+honestly, research source chips render as safe external links, and the console stays
+free of errors. It runs against a throwaway copy of
 the project, so your notes are never touched.
 
 ## Troubleshooting
@@ -225,6 +255,7 @@ the project, so your notes are never touched.
 | Badge says "offline mode" | No API key in `config.json` and no `claude` on your PATH. Both are fine — answers are just extractive. |
 | "The API key in config.json was refused" | The key is wrong, or the placeholder is still in the file. |
 | Answers are generic | The notes path was wrong. Re-run `python3 build.py /full/absolute/path`. |
+| "I have no way to reach the outside world" | Research needs the API or the `claude` CLI; offline mode cannot search. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 
 ## Layout
