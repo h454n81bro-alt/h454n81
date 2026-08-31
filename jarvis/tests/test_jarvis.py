@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 import urllib.error
 import urllib.request
 
@@ -299,6 +300,7 @@ class StubbedJarvis(TempVault):
             self.dir,
             {"api_key": "sk-ant-test", "model": "claude-opus-5", "backend": "api"},
             graph_js=os.path.join(self.dir, "graph-data.js"),
+            activity_log=os.path.join(self.dir, "activity.log"),
         )
         original = server.call_anthropic
 
@@ -309,6 +311,93 @@ class StubbedJarvis(TempVault):
 
         server.call_anthropic = fake
         self.addCleanup(setattr, server, "call_anthropic", original)
+
+
+class TestTimeMachineDates(unittest.TestCase):
+    """Pure date parsing — no server, no notes, just the clock."""
+
+    # A fixed Sunday, so "last <weekday>" and "this/last week" have one answer.
+    NOW = datetime(2026, 8, 30, 15, 0)
+
+    def r(self, question):
+        return server.extract_time_range(question, now=self.NOW)
+
+    def test_today(self):
+        got = self.r("what was I doing today?")
+        self.assertEqual(got["start"], datetime(2026, 8, 30, 0, 0))
+        self.assertEqual(got["end"], datetime(2026, 8, 31, 0, 0))
+
+    def test_yesterday(self):
+        got = self.r("what did I do yesterday?")
+        self.assertEqual(got["start"], datetime(2026, 8, 29, 0, 0))
+        self.assertEqual(got["end"], datetime(2026, 8, 30, 0, 0))
+
+    def test_days_ago(self):
+        got = self.r("3 days ago, what did I ask?")
+        self.assertEqual(got["start"], datetime(2026, 8, 27, 0, 0))
+        self.assertEqual(got["end"], datetime(2026, 8, 28, 0, 0))
+
+    def test_last_weekday(self):
+        got = self.r("what happened last Tuesday")
+        self.assertEqual(got["start"], datetime(2026, 8, 25, 0, 0))
+        self.assertEqual(got["end"], datetime(2026, 8, 26, 0, 0))
+
+    def test_bare_weekday_means_the_past_occurrence(self):
+        got = self.r("what did I do on Tuesday")
+        self.assertEqual(got["start"], datetime(2026, 8, 25, 0, 0))
+
+    def test_asking_about_todays_own_weekday_goes_back_a_full_week(self):
+        """NOW is a Sunday; "on Sunday" cannot mean today — that's just "today"."""
+        got = self.r("what did I do on Sunday")
+        self.assertEqual(got["start"], datetime(2026, 8, 23, 0, 0))
+
+    def test_explicit_date_both_word_orders(self):
+        for phrase in ("what happened August 25", "what happened 25 August", "what happened on the 25th of August"):
+            got = self.r(phrase)
+            self.assertEqual(got["start"], datetime(2026, 8, 25, 0, 0), phrase)
+
+    def test_explicit_future_date_rolls_back_a_year(self):
+        got = self.r("what happened December 20")
+        self.assertEqual(got["start"], datetime(2025, 12, 20, 0, 0))
+
+    def test_last_week_is_the_full_prior_week(self):
+        got = self.r("what did I do last week")
+        self.assertEqual(got["start"], datetime(2026, 8, 17, 0, 0))
+        self.assertEqual(got["end"], datetime(2026, 8, 24, 0, 0))
+
+    def test_this_week_runs_to_now_not_the_future(self):
+        got = self.r("what did I do this week")
+        self.assertEqual(got["start"], datetime(2026, 8, 24, 0, 0))
+        self.assertEqual(got["end"], self.NOW)
+
+    def test_no_date_returns_none(self):
+        self.assertIsNone(self.r("what did I do"))
+        self.assertIsNone(self.r("what was I working on"))
+
+
+class TestTimeMachineTrigger(unittest.TestCase):
+
+    def test_personal_phrasings_trigger(self):
+        for question in ["what was I doing yesterday?", "What did I ask about last Tuesday?",
+                         "remind me what I was doing this morning", "catch me up on today",
+                         "what did I capture last week"]:
+            self.assertTrue(server.is_time_machine_query(question), question)
+
+    def test_notes_questions_do_not_trigger(self):
+        """The two regressions this project has already hit: common words matching
+        too eagerly. A word like "yesterday" appearing in a business question must
+        not be mistaken for the user asking about their own activity.
+        """
+        for question in ["what happened to Q3 margins", "how much cash do we have",
+                         "how many bags did we ship yesterday",
+                         "what is the churn on the subscription box",
+                         "what did the note say about pricing",
+                         "when do we roast"]:
+            self.assertFalse(server.is_time_machine_query(question), question)
+
+    def test_what_happened_needs_a_date_to_count(self):
+        self.assertFalse(server.is_time_machine_query("what happened"))
+        self.assertTrue(server.is_time_machine_query("what happened yesterday"))
 
 
 class TestPersonalityDials(unittest.TestCase):
@@ -465,6 +554,96 @@ class TestAsk(StubbedJarvis):
         self.assertRegex(greeting, r"Good (morning|afternoon|evening)")
 
 
+class TestTimeMachineActivity(unittest.TestCase):
+    """The activity log itself, and the offline (no-LLM) Time Machine answers."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="jarvis-tm-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        seed_notes.seed(os.path.join(self.dir, "notes"))
+        self.jarvis = server.Jarvis(
+            os.path.join(self.dir, "notes"),
+            {"api_key": "x", "backend": "offline"},
+            graph_js=os.path.join(self.dir, "g.js"),
+            activity_log=os.path.join(self.dir, "activity.log"),
+        )
+
+    def test_log_activity_round_trips(self):
+        self.jarvis.log_activity("chat", "s1", "what is our pricing strategy", [2, 3])
+        entries = self.jarvis.read_activity()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "chat")
+        self.assertEqual(entries[0]["nodes"], [2, 3])
+        self.assertIsInstance(entries[0]["ts"], datetime)
+
+    def test_missing_log_file_reads_as_empty(self):
+        self.assertEqual(self.jarvis.read_activity(), [])
+
+    def test_asking_a_notes_question_logs_it(self):
+        self.jarvis.ask("what is our wholesale gross margin", "s1")
+        entries = self.jarvis.read_activity()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "chat")
+        self.assertIn("wholesale gross margin", entries[0]["text"])
+
+    def test_remembering_a_thought_logs_it_with_its_node(self):
+        result = self.jarvis.remember("remember that the second roaster quote is due Friday")
+        entries = self.jarvis.read_activity()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "remember")
+        self.assertEqual(entries[0]["nodes"], [result["node"]["id"]])
+
+    def test_empty_day_is_answered_honestly(self):
+        result = self.jarvis.ask("what did I do yesterday?", "s1")
+        self.assertIn("nothing on record", result["answer"].lower())
+        self.assertEqual(result["nodes"], [])
+        self.assertEqual(result["mode"], "idle")
+
+    def test_a_days_activity_is_summarised_and_lights_the_notes_touched(self):
+        self.jarvis.ask("what is our wholesale gross margin", "s1")
+        self.jarvis.ask("when do we roast", "s1")
+        self.jarvis.remember("remember that Dani wants the roaster quote by Friday")
+
+        result = self.jarvis.ask("what was I doing today?", "s1")
+        self.assertIn("2 question", result["answer"])
+        self.assertIn("1 note", result["answer"])
+        self.assertTrue(result["nodes"], "the notes actually touched should light up")
+        self.assertIn("Roaster Quote", " ".join(result["sources"]).title())
+
+    def test_date_filtering_actually_isolates_the_day(self):
+        """A logged entry from three days ago must not bleed into "today"."""
+        self.jarvis.log_activity("chat", "s1", "an old question about pricing", [2],
+                                 when=datetime.now() - timedelta(days=3))
+        self.jarvis.ask("what is our wholesale gross margin", "s1")   # today's real activity
+
+        today = self.jarvis.ask("what was I doing today?", "s1")
+        self.assertIn("1 question", today["answer"])
+
+        old_day = self.jarvis.ask("what did I do 3 days ago?", "s1")
+        self.assertIn("1 question", old_day["answer"])
+        self.assertIn("pricing", old_day["answer"].lower())
+
+    def test_time_machine_question_is_not_answered_from_the_notes(self):
+        """It must never fall through to the ordinary retrieval path."""
+        result = self.jarvis.ask("what was I doing today?", "s1")
+        self.assertEqual(result["mode"], "idle")   # nothing logged yet -> honest, not a notes guess
+
+    def test_activity_log_is_trimmed(self):
+        original = server.ACTIVITY_KEEP
+        server.ACTIVITY_KEEP = 5
+        try:
+            for i in range(30):
+                self.jarvis.log_activity("chat", "s1", "question %d" % i, [])
+            with open(self.jarvis.activity_log, encoding="utf-8") as fh:
+                line_count = sum(1 for _ in fh)
+            # The trim policy fires once past twice the cap, so the resting size
+            # fluctuates between ACTIVITY_KEEP and ACTIVITY_KEEP * 2 by design.
+            self.assertLessEqual(line_count, server.ACTIVITY_KEEP * 2)
+            self.assertLess(line_count, 30, "the log must not simply grow forever")
+        finally:
+            server.ACTIVITY_KEEP = original
+
+
 class TestRemember(StubbedJarvis):
 
     def test_capture_writes_a_real_note_and_grows_the_galaxy(self):
@@ -534,7 +713,8 @@ class TestHttp(TempVault):
         os.environ["JARVIS_QUIET"] = "1"
         self.jarvis = server.Jarvis(
             self.dir, {"api_key": "sk-ant-SECRET-DO-NOT-LEAK", "backend": "offline"},
-            graph_js=os.path.join(self.dir, "graph-data.js"))
+            graph_js=os.path.join(self.dir, "graph-data.js"),
+            activity_log=os.path.join(self.dir, "activity.log"))
         self.httpd = server.make_server(self.jarvis, port=0)
         self.port = self.httpd.server_address[1]
         thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -628,6 +808,17 @@ class TestHttp(TempVault):
             status, payload = self.post("/chat", body)
             self.assertEqual(status, 200, body)
             self.assertTrue(payload["answer"], body)
+
+    def test_time_machine_round_trip_over_http(self):
+        self.post("/chat", {"question": "what is the wholesale margin", "session": "tm-http"})
+        self.post("/remember", {"text": "remember that the roaster quote is due Friday"})
+
+        status, payload = self.post("/chat", {"question": "what was I doing today?",
+                                              "session": "tm-http"})
+        self.assertEqual(status, 200)
+        self.assertIn("1 question", payload["answer"])
+        self.assertIn("1 note", payload["answer"])
+        self.assertTrue(payload["nodes"])
 
     def test_chat_round_trip(self):
         status, payload = self.post("/chat", {"question": "what is the wholesale margin",

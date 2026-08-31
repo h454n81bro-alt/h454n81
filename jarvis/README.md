@@ -25,6 +25,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Barge-in         talk over him and he stops
   beyond    Personality      wit / brevity / formality dials
   beyond    Model hot-swap   Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8, Fable 5
+  beyond    Time Machine     "what was I doing last Tuesday?"
 ```
 
 ## Quick start
@@ -78,6 +79,30 @@ To use the API, put your key in `config.json` (created for you on first run):
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
 
+## Time Machine
+
+*"What was I doing yesterday?"* — answered from a real, durable activity log, not
+guessed from the notes. Every question asked and every thought captured is logged
+with a timestamp; a Time Machine question reads that log back, in the butler's voice,
+and flies the galaxy to the notes that day's activity actually touched.
+
+It understands **today**, **yesterday**, **N days ago**, **last Tuesday** / **on
+Tuesday** (the most recent past occurrence — asking "on Tuesday" on a Tuesday means
+last week's, not today's), **this week**, **last week**, and explicit dates like
+**August 25** or **25 August** (rolling back a year if that date hasn't happened yet
+this year). An honest "nothing on record" beats a guess when the log is empty.
+
+This is the one feature here with no viewer changes at all — it answers through the
+same `/chat` contract as everything else, so the galaxy already knew how to react to
+it.
+
+```bash
+# try it after asking a few questions and remembering something:
+"What was I doing today?"
+"What did I ask about last Tuesday?"
+"What have I captured this week?"
+```
+
 ## The reactor, the wake word, and the dials
 
 **The reactor** (top left) is the state of him at a glance: breathing slowly when
@@ -127,6 +152,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - Turn on ◉ and say **"Jarvis, when do we roast?"** without touching anything.
 - Interrupt him mid-answer with **Escape**.
 - Drag **Wit** to 0 and **Brevity** to 100, then ask the same question again.
+- Ask a few real questions, then **"What was I doing today?"**
 
 ## How it works
 
@@ -161,13 +187,15 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 73 tests, standard library only
+python3 tests/test_jarvis.py          # 97 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
 questions and the guard that stops an old topic being dragged into a new one), the
-composed personality prompt, the model allowlist, session history, `/remember`, the
-HTTP surface, the Anthropic request shape, and the API-key containment described
+composed personality prompt, the model allowlist, Time Machine's date parsing (with
+a fixed clock, so "last Tuesday" and "this week" have one correct answer) and its
+trigger detection, the activity log and its trimming, session history, `/remember`,
+the HTTP surface, the Anthropic request shape, and the API-key containment described
 above.
 
 An optional end-to-end test drives the real page in real Chromium:
@@ -177,12 +205,13 @@ pip install playwright && playwright install chromium
 python3 tests/browser_smoke.py --shot /tmp/jarvis.png
 ```
 
-51 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
+54 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
 sources, small talk moves nothing, a new star is born and written to disk, the reactor
 changes state and kicks, the wake word parses commands (including mishearings and
-non-matches), barge-in is safe when he is silent, the dials move and persist, and the
-console stays free of errors. It runs against a throwaway copy of the project, so your
-notes are never touched.
+non-matches), barge-in is safe when he is silent, the dials move and persist, a Time
+Machine question summarises the day's real activity while an empty day is answered
+honestly, and the console stays free of errors. It runs against a throwaway copy of
+the project, so your notes are never touched.
 
 ## Troubleshooting
 
@@ -206,6 +235,7 @@ jarvis/
 ├── seed_notes.py         25 sample notes for a small coffee roastery
 ├── server.py             static server + /chat + /remember + /api/status
 ├── config.example.json   copied to config.json on first run
+├── activity.log          Time Machine's memory — gitignored, created on first use
 ├── notes/                your markdown (sample vault by default)
 ├── viewer/
 │   ├── index.html        the whole front end

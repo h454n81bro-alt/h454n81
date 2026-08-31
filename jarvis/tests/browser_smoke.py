@@ -294,6 +294,27 @@ def main():
                 "? !document.getElementById('wake').disabled "
                 ": document.getElementById('wake').disabled"))
 
+            # -- Time Machine: what was I doing today? -----------------------
+            page.fill("#q", "what was I doing today?")
+            page.press("#q", "Enter")
+            page.wait_for_function(
+                "document.getElementById('answer').innerText.indexOf('thinking') === -1",
+                timeout=25000)
+            page.wait_for_timeout(2200)
+            tm_answer = page.inner_text("#answer")
+            check.that("time machine summarises today's real activity",
+                       "question" in tm_answer.lower() and "note" in tm_answer.lower(),
+                       tm_answer[:120])
+            check.that("time machine did not fall through to a notes answer",
+                       "From " not in tm_answer or "sir" in tm_answer.lower())
+
+            # A day with nothing logged must be answered honestly, not guessed at.
+            page.fill("#q", "what did I do 3 days ago?")
+            page.press("#q", "Enter")
+            page.wait_for_timeout(2200)
+            check.that("an empty day says so plainly",
+                       "nothing on record" in page.inner_text("#answer").lower())
+
             check.that("still no console errors after the whole flow",
                        not errors, errors[:3])
 

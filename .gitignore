@@ -11,3 +11,4 @@ jarvis/config.json
 jarvis/viewer/graph-data.js
 jarvis/notes/captures/
 jarvis/__pycache__/
+jarvis/activity.log

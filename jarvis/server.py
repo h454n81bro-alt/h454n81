@@ -24,7 +24,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import build
@@ -129,6 +129,111 @@ def compose_system_prompt(dials=None):
 
 
 SYSTEM_PROMPT = compose_system_prompt()
+
+
+# ---------------------------------------------------------------------------
+# Time Machine — "what was I doing last Tuesday?"
+# ---------------------------------------------------------------------------
+# Reconstructed from a durable activity log, not from the notes themselves —
+# the notes are what the business knows; this is what the user actually did.
+
+ACTIVITY_KEEP = 5000  # trim the log once it grows past twice this many lines
+
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+MONTH_NAMES = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_MONTH_PATTERN = "|".join(sorted(MONTH_NAMES, key=len, reverse=True))
+_DATE_MONTH_DAY = re.compile(r"\b(" + _MONTH_PATTERN + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I)
+_DATE_DAY_MONTH = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + _MONTH_PATTERN + r")\.?\b", re.I)
+_DAYS_AGO = re.compile(r"\b(\d+)\s+days?\s+ago\b", re.I)
+_WEEKDAY = re.compile(r"\b(last\s+)?(" + "|".join(WEEKDAYS) + r")\b", re.I)
+
+# Only a phrase about the USER'S OWN activity counts — "what happened to Q3
+# margins" is a notes question, not a Time Machine one. "what happened" alone
+# only qualifies when paired with an actual date (checked in is_time_machine_query).
+_PERSONAL_TRIGGER = re.compile(
+    r"\b(what (?:was|were) i (?:doing|working on|up to|asking about|thinking about)"
+    r"|what did i (?:do|ask|say|talk about|work on|capture)"
+    r"|remind me what i (?:was doing|did)"
+    r"|catch me up on)\b", re.I)
+
+
+def _day_bounds(day):
+    start = datetime.combine(day, datetime.min.time())
+    return start, start + timedelta(days=1)
+
+
+def extract_time_range(question, now=None):
+    """Find the day (or week) a Time Machine question is asking about.
+
+    Returns {"start": dt, "end": dt, "label": str}, or None if the question
+    names no date at all. The caller defaults to "today" in that case — once a
+    Time Machine phrase has matched, "what was I doing?" alone means today.
+    """
+    now = now or datetime.now()
+    lowered = question.lower()
+
+    if re.search(r"\btoday\b", lowered):
+        start, end = _day_bounds(now.date())
+        return {"start": start, "end": end, "label": "today"}
+
+    if re.search(r"\byesterday\b", lowered):
+        start, end = _day_bounds(now.date() - timedelta(days=1))
+        return {"start": start, "end": end, "label": "yesterday"}
+
+    if re.search(r"\blast week\b", lowered):
+        this_monday = now.date() - timedelta(days=now.weekday())
+        start, _ = _day_bounds(this_monday - timedelta(days=7))
+        end, _ = _day_bounds(this_monday)
+        return {"start": start, "end": end, "label": "last week"}
+
+    if re.search(r"\bthis week\b", lowered):
+        this_monday = now.date() - timedelta(days=now.weekday())
+        start, _ = _day_bounds(this_monday)
+        return {"start": start, "end": now, "label": "this week"}
+
+    match = _DAYS_AGO.search(lowered)
+    if match:
+        n = int(match.group(1))
+        start, end = _day_bounds(now.date() - timedelta(days=n))
+        return {"start": start, "end": end, "label": "%d day%s ago" % (n, "" if n == 1 else "s")}
+
+    match = _WEEKDAY.search(lowered)
+    if match:
+        target = WEEKDAYS.index(match.group(2).lower())
+        delta = (now.weekday() - target) % 7
+        delta = delta or 7   # asking "on Tuesday" on a Tuesday means last Tuesday, not today
+        start, end = _day_bounds(now.date() - timedelta(days=delta))
+        return {"start": start, "end": end, "label": "last " + match.group(2).capitalize()}
+
+    for pattern, order in ((_DATE_MONTH_DAY, "month_day"), (_DATE_DAY_MONTH, "day_month")):
+        match = pattern.search(lowered)
+        if not match:
+            continue
+        month_text, day_text = (match.group(1), match.group(2)) if order == "month_day" \
+            else (match.group(2), match.group(1))
+        try:
+            candidate = datetime(now.year, MONTH_NAMES[month_text.lower()], int(day_text)).date()
+        except ValueError:
+            continue
+        if candidate > now.date():
+            candidate = candidate.replace(year=candidate.year - 1)
+        start, end = _day_bounds(candidate)
+        return {"start": start, "end": end, "label": candidate.strftime("%-d %B")}
+
+    return None
+
+
+def is_time_machine_query(question, now=None):
+    """Is this the user asking what THEY did, rather than what the notes say?"""
+    lowered = question.lower()
+    if _PERSONAL_TRIGGER.search(lowered):
+        return True
+    return "what happened" in lowered and extract_time_range(question, now) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -394,10 +499,11 @@ class BackendError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 class Jarvis(object):
-    def __init__(self, notes_dir, config, graph_js=None):
+    def __init__(self, notes_dir, config, graph_js=None, activity_log=None):
         self.notes_dir = os.path.abspath(notes_dir)
         self.config = config
         self.graph_js = graph_js or os.path.join(VIEWER_DIR, "graph-data.js")
+        self.activity_log = activity_log or os.path.join(HERE, "activity.log")
         self.backend = resolve_backend(config)
         self.lock = threading.Lock()
         self.sessions = {}
@@ -444,6 +550,48 @@ class Jarvis(object):
         if len(self.sessions) > MAX_SESSIONS:
             self.sessions.pop(next(iter(self.sessions)), None)
 
+    # -- time machine's memory ---------------------------------------------
+    def log_activity(self, kind, session_id, text, nodes=None, when=None):
+        """Append one real event: a question asked, or a note captured.
+
+        Durable (unlike self.sessions), so "what did I do yesterday" still
+        works after the server has restarted.
+        """
+        entry = {
+            "ts": (when or datetime.now()).isoformat(timespec="seconds"),
+            "kind": kind, "session": session_id, "text": text, "nodes": nodes or [],
+        }
+        with self.lock:
+            with open(self.activity_log, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+            self._trim_activity_log()
+
+    def _trim_activity_log(self):
+        if not os.path.exists(self.activity_log):
+            return
+        with open(self.activity_log, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if len(lines) > ACTIVITY_KEEP * 2:
+            with open(self.activity_log, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-ACTIVITY_KEEP:])
+
+    def read_activity(self):
+        if not os.path.exists(self.activity_log):
+            return []
+        entries = []
+        with open(self.activity_log, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                    raw["ts"] = datetime.fromisoformat(raw["ts"])
+                except (ValueError, KeyError):
+                    continue
+                entries.append(raw)
+        return entries
+
     # -- chat -------------------------------------------------------------
     def ask(self, question, session_id="default", dials=None, model=None):
         question = (question or "").strip()
@@ -451,6 +599,16 @@ class Jarvis(object):
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
 
+        if is_time_machine_query(question):
+            time_range = extract_time_range(question)
+            if time_range is None:
+                start, end = _day_bounds(datetime.now().date())
+                time_range = {"start": start, "end": end, "label": "today"}
+            return self._time_machine_answer(question, time_range, session_id, dials, model)
+
+        return self._notes_answer(question, session_id, dials, model)
+
+    def _notes_answer(self, question, session_id, dials, model):
         system = compose_system_prompt(dials)
         model = resolve_model(model, self.config)
 
@@ -488,6 +646,7 @@ class Jarvis(object):
 
         with self.lock:
             self.remember_turn(session_id, question, answer)
+        self.log_activity("chat", session_id, question, node_ids)
 
         return {
             "answer": answer,
@@ -497,6 +656,90 @@ class Jarvis(object):
             "mode": mode,
             "model": model if self.backend != "offline" else None,
         }
+
+    # -- time machine -------------------------------------------------------
+    def _time_machine_answer(self, question, time_range, session_id, dials, model):
+        entries = [e for e in self.read_activity()
+                  if time_range["start"] <= e["ts"] < time_range["end"]]
+        chats = [e for e in entries if e["kind"] == "chat"]
+        captures = [e for e in entries if e["kind"] == "remember"]
+
+        # Weight a captured note above a note merely mentioned in passing — it is
+        # the stronger signal of what the day was actually about.
+        touched = {}
+        for e in chats:
+            for node_id in e.get("nodes") or []:
+                touched[node_id] = touched.get(node_id, 0) + 1
+        for e in captures:
+            for node_id in e.get("nodes") or []:
+                touched[node_id] = touched.get(node_id, 0) + 2
+
+        node_ids = [nid for nid, _ in sorted(touched.items(), key=lambda kv: -kv[1])
+                   if 0 <= nid < len(self.graph["nodes"])][:8]
+        labels = [self.graph["nodes"][nid]["label"] for nid in node_ids]
+
+        if not chats and not captures:
+            answer = "Nothing on record for %s, sir. A quiet day, or an untracked one." % time_range["label"]
+            with self.lock:
+                self.remember_turn(session_id, question, answer)
+            self.log_activity("chat", session_id, question, [])
+            return {"answer": answer, "nodes": [], "sources": [], "backend": self.backend,
+                    "mode": "idle", "model": None}
+
+        sample_questions = [e["text"] for e in chats][:4]
+        capture_titles = [e["text"] for e in captures][:4]
+        summary = "\n".join([
+            "Activity log for %s:" % time_range["label"],
+            "- %d question(s) asked%s" % (
+                len(chats), (": " + "; ".join(sample_questions)) if sample_questions else ""),
+            "- %d note(s) captured%s" % (
+                len(captures), (": " + "; ".join(capture_titles)) if capture_titles else ""),
+            "- notes touched: %s" % (", ".join(labels) if labels else "none"),
+        ])
+
+        system = compose_system_prompt(dials)
+        model = resolve_model(model, self.config)
+        with self.lock:
+            history = list(self.history(session_id))
+        prompt = ("This is a Time Machine question — the user wants to know what THEY were "
+                  "doing, not what the notes themselves say. Here is the real activity log:\n\n"
+                  "%s\n\n---\nThe user asks: %s" % (summary, question))
+        messages = history + [{"role": "user", "content": prompt}]
+
+        try:
+            if self.backend == "api":
+                answer = call_anthropic(self.config, system, messages, model=model)
+            elif self.backend == "cli":
+                answer = call_claude_cli(system, messages, model=model)
+            else:
+                answer = self._time_machine_offline(time_range, chats, captures, labels)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [], "backend": self.backend,
+                    "mode": "error", "error": True}
+
+        answer = tidy(answer)
+        mode = "cluster" if len(node_ids) >= CLUSTER_THRESHOLD else ("focus" if node_ids else "idle")
+
+        with self.lock:
+            self.remember_turn(session_id, question, answer)
+        self.log_activity("chat", session_id, question, node_ids)
+
+        return {
+            "answer": answer, "nodes": node_ids, "sources": labels,
+            "backend": self.backend, "mode": mode,
+            "model": model if self.backend != "offline" else None,
+        }
+
+    @staticmethod
+    def _time_machine_offline(time_range, chats, captures, labels):
+        bits = []
+        if chats:
+            bits.append("%d question%s asked" % (len(chats), "" if len(chats) == 1 else "s"))
+        if captures:
+            bits.append("%d note%s captured" % (len(captures), "" if len(captures) == 1 else "s"))
+        body = " and ".join(bits) if bits else "nothing notable"
+        tail = (", mostly around %s" % ", ".join(labels[:3])) if labels else ""
+        return "On %s, sir: %s%s." % (time_range["label"], body, tail)
 
     # -- total recall -----------------------------------------------------
     def remember(self, text):
@@ -540,6 +783,8 @@ class Jarvis(object):
             build.write_graph_js(self.graph, self.graph_js)
             total = len(self.graph["nodes"])
             links = [l for l in self.graph["links"] if node["id"] in (l["source"], l["target"])]
+
+        self.log_activity("remember", "voice", title, [node["id"]])
 
         return {
             "node": node,
