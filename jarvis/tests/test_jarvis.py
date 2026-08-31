@@ -222,6 +222,36 @@ class TestRetrieval(TempVault):
         weights = server.term_weights(graph, ["coffee", "churn"])
         self.assertGreater(weights["churn"], weights["coffee"])
 
+    def test_anaphoric_follow_up_uses_the_previous_question(self):
+        """"How far off is that target?" cannot be retrieved from its own words."""
+        seed_notes.seed(self.dir)
+        graph = build.build_graph(self.dir)
+        previous = "What are the three priorities for 2026 and who owns the first one?"
+        follow_up = "How far off is that first target?"
+
+        self.assertTrue(server.needs_context(follow_up))
+        alone = [graph["nodes"][i]["label"] for i, _ in server.score_notes(follow_up, graph)[:3]]
+        with_context = [graph["nodes"][i]["label"]
+                        for i, _ in server.score_notes(follow_up, graph, context=previous)[:3]]
+        self.assertNotIn("2026 Growth Plan", alone)
+        self.assertEqual(with_context[0], "2026 Growth Plan")
+
+    def test_a_fresh_question_is_not_dragged_back_to_the_old_topic(self):
+        """The guard on the fix above: context must only apply to real follow-ups."""
+        seed_notes.seed(self.dir)
+        graph = build.build_graph(self.dir)
+        for previous, question, expected in [
+            ("what is our pricing strategy", "when do we roast", "Roasting Schedule"),
+            ("how do we hire baristas", "what is the churn on the subscription box",
+             "Subscription Box"),
+            ("tell me about green bean sourcing", "how much cash do we have",
+             "Cash Flow Forecast"),
+        ]:
+            self.assertFalse(server.needs_context(question), question)
+            context = previous if server.needs_context(question) else None
+            top = graph["nodes"][server.score_notes(question, graph, context=context)[0][0]]["label"]
+            self.assertEqual(top, expected, "%r after %r -> %r" % (question, previous, top))
+
     def test_stopwords_are_ignored(self):
         self.assertEqual(server.tokenise("what is the of and a"), [])
         self.assertEqual(server.tokenise("Wholesale MARGIN"), ["wholesale", "margin"])
@@ -320,6 +350,11 @@ class TestAsk(StubbedJarvis):
         # Earlier turns are actually replayed to the model.
         self.assertGreater(len(self.sent[-1]["messages"]), 1)
 
+    def test_ask_feeds_the_previous_question_into_retrieval(self):
+        self.jarvis.ask("What are the three priorities for 2026?", "s3")
+        result = self.jarvis.ask("How far off is that first target?", "s3")
+        self.assertIn("2026 Growth Plan", result["sources"])
+
     def test_sessions_are_isolated(self):
         self.jarvis.ask("pricing strategy", "alice")
         self.jarvis.ask("roasting schedule", "bob")
@@ -370,6 +405,20 @@ class TestRemember(StubbedJarvis):
         anchor = self.jarvis.graph["nodes"][result["anchor"]]
         self.assertEqual(anchor["label"], "Subscription Box")
         self.assertTrue(result["links"])
+
+    def test_capture_anchors_by_content_not_only_by_title(self):
+        """A captured thought names no note, so title matching alone leaves it floating."""
+        result = self.jarvis.remember(
+            "remember that the second roaster quote is due from Dani by Friday")
+        self.assertIsNotNone(result["anchor"], "capture was left with no anchor")
+        self.assertEqual(self.jarvis.graph["nodes"][result["anchor"]]["label"], "2026 Growth Plan")
+        self.assertTrue(result["links"])
+        self.assertEqual(result["node"]["degree"], len(result["links"]))
+
+    def test_a_capture_about_nothing_stays_unlinked(self):
+        result = self.jarvis.remember("remember that my neighbour's dog is called Biscuit")
+        self.assertIsNone(result["anchor"])
+        self.assertEqual(result["links"], [])
 
     def test_capture_regenerates_graph_data_js(self):
         self.jarvis.remember("remember that the roasting schedule moves to Wednesday")

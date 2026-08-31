@@ -40,9 +40,16 @@ PLACEHOLDER_KEYS = {"", "PUT-YOUR-KEY-HERE", "sk-ant-xxx", "your-key-here"}
 
 TOP_K = 6              # notes handed to the model
 FLY_THRESHOLD = 3      # below this the question isn't really about the notes
+CONTEXT_WEIGHT = 0.45  # how much the previous question counts when resolving "that"
+CAPTURE_LINK_MIN = 4.0 # score a captured note needs to wire itself to an existing one
 CLUSTER_THRESHOLD = 4  # 4+ sources: light the cluster instead of diving to one
 MAX_HISTORY = 8        # messages (4 exchanges) kept per session
 MAX_SESSIONS = 200
+
+# Words that mean the question leans on the previous one: "how far off is *that*
+# first target?" cannot be retrieved from its own words alone.
+ANAPHORA = ("that", "this", "it", "its", "they", "them", "those", "these", "there",
+            "he", "she", "his", "her", "their", "same", "instead", "one")
 
 STOPWORDS = set("""
 a an and are as at be been but by can could did do does for from had has have he her him his
@@ -136,29 +143,48 @@ def term_weights(graph, terms):
     return weights
 
 
-def score_notes(question, graph):
+def needs_context(question):
+    """Is this a follow-up that cannot stand on its own words?
+
+    Only an explicit anaphor counts. Treating every short question as a follow-up
+    drags the previous topic along: "when do we roast" asked after "what is our
+    pricing strategy" then retrieves Pricing Strategy, which is plainly wrong.
+    """
+    lowered = question.lower()
+    return any(re.search(r"\b" + word + r"\b", lowered) for word in ANAPHORA)
+
+
+def score_notes(question, graph, context=None):
     """Score every note against the question. Title matches weigh extra.
+
+    `context` is the previous question in the conversation. Its words count for
+    less than the current ones, but without them a follow-up like "how far off is
+    that target?" retrieves nothing it should and the camera flies somewhere wrong.
 
     Returns [(node_id, score)] sorted best first, zero-scoring notes dropped.
     """
     terms = tokenise(question)
-    if not terms:
+    carried = [t for t in tokenise(context or "") if t not in set(terms)]
+    if not terms and not carried:
         return []
     asked = question.lower()
-    weights = term_weights(graph, terms)
+    weights = term_weights(graph, terms + carried)
     # Adjacent query words that stay close together in a note are strong evidence:
     # "second cafe" appears verbatim in the notes that actually answer the question,
     # while the Cafe Opening Checklist merely owns both words separately.
     pairs = []
-    for a, b in zip(terms, terms[1:]):
-        if a == b:
-            continue
-        near = r"\b%s\b\W+(?:\w+\W+){0,2}\b%s\b"
-        pairs.append((
-            re.compile("(?:" + near % (re.escape(a), re.escape(b))
-                       + ")|(?:" + near % (re.escape(b), re.escape(a)) + ")"),
-            min(weights[a], weights[b]),
-        ))
+    for sequence, share in ((terms, 1.0), (tokenise(context or ""), CONTEXT_WEIGHT)):
+        for a, b in zip(sequence, sequence[1:]):
+            if a == b or a not in weights or b not in weights:
+                continue
+            near = r"\b%s\b\W+(?:\w+\W+){0,2}\b%s\b"
+            pairs.append((
+                re.compile("(?:" + near % (re.escape(a), re.escape(b))
+                           + ")|(?:" + near % (re.escape(b), re.escape(a)) + ")"),
+                min(weights[a], weights[b]) * share,
+            ))
+
+    scoring_terms = [(t, 1.0) for t in terms] + [(t, CONTEXT_WEIGHT) for t in carried]
     scored = []
 
     for node in graph["nodes"]:
@@ -172,8 +198,8 @@ def score_notes(question, graph):
         if node["group"].lower() in terms:
             score += 1.5
 
-        for term in terms:
-            weight = weights[term]
+        for term, share in scoring_terms:
+            weight = weights[term] * share
             if re.search(r"\b" + re.escape(term) + r"\b", label):
                 score += 3.2 * weight   # a title word outweighs a body word…
             hits = len(re.findall(r"\b" + re.escape(term) + r"\b", text))
@@ -362,10 +388,12 @@ class Jarvis(object):
                     "backend": self.backend, "mode": "idle"}
 
         with self.lock:
-            ranked = score_notes(question, self.graph)[:TOP_K]
+            history = list(self.history(session_id))
+            previous = next((m["content"] for m in reversed(history)
+                             if m["role"] == "user"), None) if needs_context(question) else None
+            ranked = score_notes(question, self.graph, context=previous)[:TOP_K]
             relevant = [pair for pair in ranked if pair[1] >= FLY_THRESHOLD]
             context = build_context(self.graph, ranked) if ranked else "(no matching notes)"
-            history = list(self.history(session_id))
             graph_nodes = self.graph["nodes"]
 
         prompt = ("Notes retrieved for this question:\n\n%s\n\n---\nThe user asks: %s"
@@ -423,6 +451,24 @@ class Jarvis(object):
         with self.lock:
             node, anchor = build.append_note(self.graph, self.notes_dir, path)
             self.graph.pop("_df", None)   # a new note changes every term's rarity
+
+            # Title matching alone almost never links a captured thought to anything —
+            # "the second roaster quote is due from Dani" names no note. Fall back to
+            # the same content scoring /chat uses, so the new star is born beside what
+            # it is actually about.
+            linked = {l["target"] for l in self.graph["links"] if l["source"] == node["id"]}
+            linked |= {l["source"] for l in self.graph["links"] if l["target"] == node["id"]}
+            related = [(nid, sc) for nid, sc in score_notes(text, self.graph)
+                       if nid != node["id"] and sc >= CAPTURE_LINK_MIN][:3]
+            for other_id, _score in related:
+                if other_id not in linked:
+                    self.graph["links"].append(
+                        {"source": node["id"], "target": other_id, "value": 1})
+                    linked.add(other_id)
+            if anchor is None and related:
+                anchor = related[0][0]
+            node["degree"] = len(linked)
+
             build.write_graph_js(self.graph, self.graph_js)
             total = len(self.graph["nodes"])
             links = [l for l in self.graph["links"] if node["id"] in (l["source"], l["target"])]
