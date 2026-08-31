@@ -5,3 +5,9 @@ node_modules/
 .wrangler/
 dist/
 tsconfig.tsbuildinfo
+
+# JARVIS: runtime files, generated output, and the file that holds your API key
+jarvis/config.json
+jarvis/viewer/graph-data.js
+jarvis/notes/captures/
+jarvis/__pycache__/

@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS — Knowledge Galaxy</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='%23050914'/><circle cx='16' cy='16' r='10.5' fill='none' stroke='%236fd6ff' stroke-opacity='.45' stroke-width='1.4'/><circle cx='16' cy='16' r='5' fill='%236fd6ff'/><circle cx='26' cy='11' r='2.4' fill='%23ff8ad6'/><circle cx='6' cy='22' r='2' fill='%237dffb3'/></svg>">
+<style>
+  :root {
+    --ink: #e8f0ff;
+    --dim: #7d8ba8;
+    --line: rgba(150, 190, 255, .16);
+    --glass: rgba(9, 14, 28, .72);
+    --accent: #6fd6ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden; background: #02030a; color: var(--ink);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- deep space ------------------------------------------------------ */
+  #sky { position: fixed; inset: 0; z-index: 0; }
+  #stars { position: absolute; inset: -5%; width: 110%; height: 110%; animation: drift 220s linear infinite; }
+  #nebula {
+    position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(48% 38% at 22% 28%, rgba(60,110,220,.20), transparent 70%),
+      radial-gradient(42% 34% at 78% 68%, rgba(150,60,190,.16), transparent 70%),
+      radial-gradient(60% 50% at 50% 100%, rgba(20,90,120,.16), transparent 70%);
+  }
+  @keyframes drift {
+    0%   { transform: translate3d(0,0,0) }
+    50%  { transform: translate3d(-2%, -1.4%, 0) }
+    100% { transform: translate3d(0,0,0) }
+  }
+  #graph { position: fixed; inset: 0; z-index: 1; }
+  #vignette {
+    position: fixed; inset: 0; z-index: 2; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 52%, rgba(0,0,0,.72) 100%);
+  }
+
+  /* ---- chrome ---------------------------------------------------------- */
+  .panelish {
+    background: var(--glass); border: 1px solid var(--line);
+    border-radius: 14px; backdrop-filter: blur(14px);
+  }
+  #hud { position: fixed; z-index: 5; top: 18px; left: 20px; padding: 12px 16px; }
+  #hud h1 {
+    margin: 0; font-size: 15px; letter-spacing: .34em; font-weight: 600;
+    text-transform: uppercase; color: #fff;
+  }
+  #hud .sub { margin-top: 3px; font-size: 11.5px; color: var(--dim); letter-spacing: .04em; }
+  #hud .badge {
+    display: inline-block; margin-top: 7px; padding: 2px 8px; border-radius: 999px;
+    font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    border: 1px solid var(--line); color: var(--accent);
+  }
+  #hud .badge.warn { color: #ffb45e; border-color: rgba(255,180,94,.35); }
+
+  #legend { position: fixed; z-index: 5; left: 20px; bottom: 22px; padding: 11px 13px; max-width: 210px; }
+  #legend .row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 5px; margin: 1px -5px;
+    border-radius: 7px; cursor: pointer; font-size: 12px; color: var(--dim);
+  }
+  #legend .row:hover, #legend .row.on { background: rgba(255,255,255,.07); color: var(--ink); }
+  #legend .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  #legend .n { margin-left: auto; font-size: 10.5px; opacity: .65; }
+
+  /* ---- source panel ---------------------------------------------------- */
+  #panel {
+    position: fixed; z-index: 6; top: 18px; right: 20px; bottom: 190px; width: min(390px, 40vw);
+    padding: 20px 22px; overflow-y: auto; display: flex; flex-direction: column;
+    transform: translateX(calc(100% + 32px)); opacity: 0;
+    transition: transform .5s cubic-bezier(.22,.9,.3,1), opacity .4s;
+  }
+  #panel.open { transform: none; opacity: 1; }
+  #panel .eyebrow {
+    font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
+  }
+  #panel h2 { margin: 6px 0 4px; font-size: 21px; line-height: 1.25; color: #fff; font-weight: 600; }
+  #panel .meta { font-size: 11.5px; color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #panel .body { margin-top: 15px; font-size: 13.5px; color: #c9d6ee; }
+  #panel .links { margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--line); }
+  #panel .links h3 {
+    margin: 0 0 9px; font-size: 10.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--dim); font-weight: 600;
+  }
+  #panel .chip {
+    display: inline-block; margin: 0 5px 5px 0; padding: 3px 10px; font-size: 12px;
+    border: 1px solid var(--line); border-radius: 999px; cursor: pointer; color: #b9c8e4;
+  }
+  #panel .chip:hover { border-color: var(--accent); color: #fff; }
+  #panel .close {
+    position: absolute; top: 14px; right: 16px; cursor: pointer; border: 0; background: none;
+    color: var(--dim); font-size: 19px; line-height: 1; padding: 4px;
+  }
+  #panel .close:hover { color: #fff; }
+
+  /* ---- console --------------------------------------------------------- */
+  #console {
+    position: fixed; z-index: 7; left: 50%; transform: translateX(-50%); bottom: 24px;
+    width: min(700px, calc(100vw - 48px));
+    transition: left .55s cubic-bezier(.22,.9,.3,1);
+  }
+  /* Slide out from under the source panel while it is open. */
+  @media (min-width: 1100px) {
+    body.panel-open #console { left: calc((100vw - min(390px, 40vw) - 42px) / 2); }
+  }
+  #answer {
+    padding: 15px 18px; margin-bottom: 11px; font-size: 15px; line-height: 1.6; color: #fff;
+    max-height: 34vh; overflow-y: auto;
+    opacity: 0; transform: translateY(10px); transition: opacity .35s, transform .35s;
+  }
+  #answer.show { opacity: 1; transform: none; }
+  #answer .cited {
+    display: block; margin-top: 10px; font-size: 11px; color: var(--dim);
+    letter-spacing: .04em;
+  }
+  #status {
+    height: 17px; margin: 0 0 7px 6px; font-size: 11.5px; letter-spacing: .06em; color: var(--dim);
+  }
+  #status.live { color: #ff6b8b; }
+  #status.busy { color: var(--accent); }
+  #suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 9px 2px; }
+  #suggestions button {
+    padding: 4px 11px; font-size: 12px; border-radius: 999px; cursor: pointer;
+    background: rgba(255,255,255,.05); border: 1px solid var(--line); color: #a9bbd8;
+    font-family: inherit;
+  }
+  #suggestions button:hover { color: #fff; border-color: var(--accent); }
+  #bar { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 18px; }
+  #bar input {
+    flex: 1; background: none; border: 0; outline: none; color: var(--ink);
+    font: inherit; font-size: 15px; padding: 9px 0;
+  }
+  #bar input::placeholder { color: #566484; }
+  .iconbtn {
+    width: 40px; height: 40px; flex: none; border-radius: 50%; cursor: pointer;
+    border: 1px solid var(--line); background: rgba(255,255,255,.05); color: var(--ink);
+    font-size: 16px; display: grid; place-items: center; transition: .2s;
+  }
+  .iconbtn:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  .iconbtn:disabled { opacity: .32; cursor: not-allowed; }
+  #mic.on { background: #ff3b62; border-color: #ff3b62; color: #fff; animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(255,59,98,.18); } }
+
+  #unlock {
+    display: block; margin: 0 0 9px 2px; padding: 5px 13px; border-radius: 999px;
+    font-size: 12px; color: #ffd9a1; font-family: inherit; cursor: pointer;
+    background: rgba(60,40,10,.75); border: 1px solid rgba(255,190,110,.3);
+  }
+  #unlock:hover { color: #fff; border-color: rgba(255,190,110,.6); }
+  #unlock[hidden] { display: none; }
+
+  #fatal {
+    position: fixed; inset: 0; z-index: 20; display: none; place-items: center; padding: 40px;
+    background: #02030a; text-align: center;
+  }
+  #fatal.show { display: grid; }
+  #fatal code { color: var(--accent); font-size: 13px; }
+
+  @media (max-width: 700px) {
+    #panel { width: calc(100vw - 40px); bottom: 240px; }
+    #legend { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="sky"><canvas id="stars"></canvas><div id="nebula"></div></div>
+<div id="graph"></div>
+<div id="vignette"></div>
+
+<header id="hud" class="panelish">
+  <h1>Jarvis</h1>
+  <div class="sub"><span id="noteCount">—</span> notes indexed</div>
+  <span class="badge" id="backendBadge">connecting…</span>
+</header>
+
+<div id="legend" class="panelish"></div>
+
+<aside id="panel" class="panelish">
+  <button class="close" id="panelClose" title="Close">×</button>
+  <div class="eyebrow" id="pGroup"></div>
+  <h2 id="pTitle"></h2>
+  <div class="meta" id="pMeta"></div>
+  <div class="body" id="pBody"></div>
+  <div class="links" id="pLinksWrap" hidden>
+    <h3>Connected notes</h3>
+    <div id="pLinks"></div>
+  </div>
+</aside>
+
+<div id="console">
+  <div id="answer" class="panelish"></div>
+  <button id="unlock" hidden>🔊 Click to let JARVIS speak</button>
+  <div id="status"></div>
+  <div id="suggestions"></div>
+  <form id="bar" class="panelish" autocomplete="off">
+    <input id="q" placeholder="Ask your notes anything… or say “remember that …”" aria-label="Ask JARVIS">
+    <button type="button" class="iconbtn" id="mic" title="Speak (Chrome)">🎙</button>
+    <button type="submit" class="iconbtn" id="send" title="Ask">↵</button>
+  </form>
+</div>
+
+<div id="fatal">
+  <div>
+    <h2>The galaxy could not be rendered.</h2>
+    <p style="color:#7d8ba8">The 3d-force-graph library failed to load from both the local
+    <code>viewer/vendor/</code> folder and the CDN. Check your connection, then hard-reload.</p>
+  </div>
+</div>
+
+<script src="graph-data.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// Library loader: local vendor copy first (works offline), CDN as the fallback.
+// ---------------------------------------------------------------------------
+(function () {
+  const SOURCES = [
+    "vendor/3d-force-graph.min.js",
+    "https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/dist/3d-force-graph.min.js",
+    "https://unpkg.com/3d-force-graph@1.80.0/dist/3d-force-graph.min.js"
+  ];
+  function load(src) {
+    return new Promise(function (resolve, reject) {
+      const tag = document.createElement("script");
+      tag.src = src;
+      tag.onload = resolve;
+      tag.onerror = function () { tag.remove(); reject(new Error(src)); };
+      document.head.appendChild(tag);
+    });
+  }
+  (function next(i) {
+    if (i >= SOURCES.length) { document.getElementById("fatal").classList.add("show"); return; }
+    load(SOURCES[i]).then(
+      function () { window.JARVIS_BOOT(); },
+      function () { next(i + 1); }
+    );
+  })(0);
+})();
+</script>
+
+<script>
+window.JARVIS_BOOT = function () {
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Starfield
+// ---------------------------------------------------------------------------
+(function starfield() {
+  const canvas = document.getElementById("stars");
+  const ctx = canvas.getContext("2d");
+  function paint() {
+    const w = canvas.width = canvas.offsetWidth;
+    const h = canvas.height = canvas.offsetHeight;
+    ctx.clearRect(0, 0, w, h);
+    const count = Math.round(w * h / 1400);
+    for (let i = 0; i < count; i++) {
+      const x = Math.random() * w, y = Math.random() * h;
+      const r = Math.random() < 0.93 ? Math.random() * 0.9 + 0.2 : Math.random() * 1.7 + 1;
+      const a = Math.random() * 0.65 + 0.12;
+      const tint = Math.random();
+      ctx.fillStyle = tint > 0.9 ? "rgba(180,205,255," + a + ")"
+                    : tint < 0.06 ? "rgba(255,220,190," + a + ")"
+                                  : "rgba(255,255,255," + a + ")";
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 6.284); ctx.fill();
+    }
+  }
+  paint();
+  let t; addEventListener("resize", function () { clearTimeout(t); t = setTimeout(paint, 250); });
+})();
+
+// ---------------------------------------------------------------------------
+// Palette
+// ---------------------------------------------------------------------------
+const PALETTE = ["#6fd6ff", "#7dffb3", "#ff8ad6", "#ffd166", "#b39dff", "#5ff0e2", "#ff9b6b", "#9df06f"];
+const GROUP_COLOR = {};
+(GRAPH.groups || []).forEach(function (g, i) { GROUP_COLOR[g] = PALETTE[i % PALETTE.length]; });
+GROUP_COLOR.captures = "#ff9b6b";     // notes born by voice glow warm
+function colorOf(node) { return GROUP_COLOR[node.group] || "#8fa6c8"; }
+function dimmed(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return "rgb(" + Math.round(r * .30) + "," + Math.round(g * .30) + "," + Math.round(b * .34) + ")";
+}
+function brighten(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = function (c) { return Math.round(c + (255 - c) * amount); };
+  return "rgb(" + mix((n >> 16) & 255) + "," + mix((n >> 8) & 255) + "," + mix(n & 255) + ")";
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const data = { nodes: GRAPH.nodes.slice(), links: GRAPH.links.map(function (l) { return Object.assign({}, l); }) };
+const byId = new Map(data.nodes.map(function (n) { return [n.id, n]; }));
+
+let highlightNodes = new Set();
+let highlightLinks = new Set();
+let selectedId = null;
+let pulseUntil = 0;
+let pulseId = null;
+let lastInteraction = 0;
+let flyingUntil = 0;
+const SESSION = "s-" + Math.random().toString(36).slice(2, 10);
+
+const el = {
+  answer: document.getElementById("answer"),
+  status: document.getElementById("status"),
+  input: document.getElementById("q"),
+  mic: document.getElementById("mic"),
+  send: document.getElementById("send"),
+  bar: document.getElementById("bar"),
+  panel: document.getElementById("panel"),
+  legend: document.getElementById("legend"),
+  suggestions: document.getElementById("suggestions"),
+  unlock: document.getElementById("unlock"),
+  noteCount: document.getElementById("noteCount"),
+  badge: document.getElementById("backendBadge")
+};
+
+// ---------------------------------------------------------------------------
+// The galaxy
+// ---------------------------------------------------------------------------
+const graph = ForceGraph3D()(document.getElementById("graph"))
+  .graphData(data)
+  .backgroundColor("rgba(0,0,0,0)")          // the starfield shows through
+  .showNavInfo(false)
+  .nodeLabel(function (n) { return n.label; })
+  .nodeRelSize(5)
+  .nodeResolution(18)
+  .nodeOpacity(0.92)
+  .nodeVal(function (n) {
+    let v = 1.4 + (n.degree || 0) * 0.34;
+    if (n.id === selectedId) v *= 1.55;
+    else if (highlightNodes.has(n.id)) v *= 1.22;
+    if (n.id === pulseId && Date.now() < pulseUntil) {
+      v *= 1.9 + Math.sin(Date.now() / 90) * 0.8;
+    }
+    return v;
+  })
+  .nodeColor(function (n) {
+    if (!highlightNodes.size) return colorOf(n);
+    if (n.id === selectedId) return brighten(colorOf(n), 0.3);
+    if (highlightNodes.has(n.id)) return colorOf(n);
+    return dimmed(colorOf(n));
+  })
+  .linkColor(function (l) {
+    return highlightLinks.has(l) ? "rgba(175,215,255,.7)"
+         : highlightNodes.size ? "rgba(120,160,220,.06)"
+                               : "rgba(150,190,245,.30)";
+  })
+  .linkWidth(function (l) { return highlightLinks.has(l) ? 0.85 : 0.42; })
+  .linkDirectionalParticles(function (l) { return highlightLinks.has(l) ? 4 : 0; })
+  .linkDirectionalParticleWidth(1.8)
+  .linkDirectionalParticleSpeed(0.006)
+  .onNodeClick(function (n) { selectNode(n, true); })
+  .onBackgroundClick(function () { clearSelection(); });
+
+graph.d3Force("charge").strength(-155);
+if (graph.d3Force("link")) graph.d3Force("link").distance(58);
+
+function refresh() {
+  graph.nodeColor(graph.nodeColor()).nodeVal(graph.nodeVal())
+       .linkColor(graph.linkColor()).linkWidth(graph.linkWidth())
+       .linkDirectionalParticles(graph.linkDirectionalParticles());
+}
+
+function neighboursOf(ids) {
+  const set = new Set(ids);
+  const links = new Set();
+  graph.graphData().links.forEach(function (l) {
+    const s = typeof l.source === "object" ? l.source.id : l.source;
+    const t = typeof l.target === "object" ? l.target.id : l.target;
+    if (set.has(s) || set.has(t)) { links.add(l); }
+  });
+  return links;
+}
+
+function highlight(ids, includeNeighbours) {
+  highlightNodes = new Set(ids);
+  highlightLinks = new Set();
+  graph.graphData().links.forEach(function (l) {
+    const s = typeof l.source === "object" ? l.source.id : l.source;
+    const t = typeof l.target === "object" ? l.target.id : l.target;
+    const sIn = highlightNodes.has(s), tIn = highlightNodes.has(t);
+    if (includeNeighbours ? (sIn || tIn) : (sIn && tIn)) highlightLinks.add(l);
+  });
+  if (includeNeighbours) {
+    highlightLinks.forEach(function (l) {
+      highlightNodes.add(typeof l.source === "object" ? l.source.id : l.source);
+      highlightNodes.add(typeof l.target === "object" ? l.target.id : l.target);
+    });
+  }
+  refresh();
+}
+
+function clearSelection() {
+  selectedId = null;
+  highlightNodes = new Set();
+  highlightLinks = new Set();
+  el.panel.classList.remove("open");
+  document.body.classList.remove("panel-open");
+  document.querySelectorAll("#legend .row").forEach(function (r) { r.classList.remove("on"); });
+  refresh();
+}
+
+function flyTo(node, ms) {
+  ms = ms === undefined ? 2200 : ms;
+  const r = Math.hypot(node.x || 0, node.y || 0, node.z || 0) || 1;
+  const ratio = 1 + 250 / r;
+  flyingUntil = Date.now() + ms + 400;
+  graph.cameraPosition(
+    { x: (node.x || 0) * ratio, y: (node.y || 0) * ratio, z: (node.z || 0) * ratio },
+    node, ms
+  );
+}
+
+function flyToCluster(nodes, ms) {
+  ms = ms === undefined ? 2200 : ms;
+  const c = nodes.reduce(function (acc, n) {
+    acc.x += (n.x || 0) / nodes.length;
+    acc.y += (n.y || 0) / nodes.length;
+    acc.z += (n.z || 0) / nodes.length;
+    return acc;
+  }, { x: 0, y: 0, z: 0 });
+  const spread = Math.max.apply(null, nodes.map(function (n) {
+    return Math.hypot((n.x || 0) - c.x, (n.y || 0) - c.y, (n.z || 0) - c.z);
+  }).concat([60]));
+  const r = Math.hypot(c.x, c.y, c.z) || 1;
+  const ratio = 1 + (spread * 2.0 + 200) / r;
+  flyingUntil = Date.now() + ms + 400;
+  graph.cameraPosition({ x: c.x * ratio, y: c.y * ratio, z: c.z * ratio }, c, ms);
+}
+
+function selectNode(node, fly) {
+  selectedId = node.id;
+  highlight([node.id], true);
+  openPanel(node);
+  if (fly) flyTo(node);
+}
+
+// ---------------------------------------------------------------------------
+// Side panel
+// ---------------------------------------------------------------------------
+function openPanel(node) {
+  document.getElementById("pGroup").textContent = node.group;
+  document.getElementById("pTitle").textContent = node.label;
+  document.getElementById("pMeta").textContent = node.path + " · " + (node.words || 0) + " words";
+  document.getElementById("pBody").textContent = node.excerpt || "";
+
+  const wrap = document.getElementById("pLinksWrap");
+  const box = document.getElementById("pLinks");
+  box.innerHTML = "";
+  const seen = new Set();
+  graph.graphData().links.forEach(function (l) {
+    const s = typeof l.source === "object" ? l.source.id : l.source;
+    const t = typeof l.target === "object" ? l.target.id : l.target;
+    let other = null;
+    if (s === node.id) other = t; else if (t === node.id) other = s;
+    if (other === null || seen.has(other)) return;
+    seen.add(other);
+    const target = byId.get(other);
+    if (!target) return;
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = target.label;
+    chip.onclick = function () { selectNode(target, true); };
+    box.appendChild(chip);
+  });
+  wrap.hidden = seen.size === 0;
+  el.panel.classList.add("open");
+  document.body.classList.add("panel-open");
+}
+document.getElementById("panelClose").onclick = clearSelection;
+
+// ---------------------------------------------------------------------------
+// Legend
+// ---------------------------------------------------------------------------
+(function legend() {
+  const counts = {};
+  data.nodes.forEach(function (n) { counts[n.group] = (counts[n.group] || 0) + 1; });
+  Object.keys(counts).sort().forEach(function (group) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = '<span class="dot" style="background:' + colorOf({ group: group }) + '"></span>'
+                  + '<span>' + group + '</span><span class="n">' + counts[group] + '</span>';
+    row.onclick = function () {
+      const already = row.classList.contains("on");
+      clearSelection();
+      if (already) return;
+      row.classList.add("on");
+      const ids = data.nodes.filter(function (n) { return n.group === group; })
+                            .map(function (n) { return n.id; });
+      highlight(ids, false);
+      const nodes = ids.map(function (i) { return byId.get(i); });
+      flyToCluster(nodes);
+    };
+    el.legend.appendChild(row);
+  });
+})();
+
+// ---------------------------------------------------------------------------
+// Idle drift + pulse animation
+// ---------------------------------------------------------------------------
+["pointerdown", "wheel", "keydown", "touchstart"].forEach(function (evt) {
+  addEventListener(evt, function () { lastInteraction = Date.now(); }, { passive: true });
+});
+
+(function animate() {
+  requestAnimationFrame(animate);
+  const now = Date.now();
+
+  if (pulseId !== null) {
+    if (now < pulseUntil) { if (now % 5 < 2) refresh(); }
+    else { pulseId = null; refresh(); }
+  }
+
+  if (now - lastInteraction < 4000 || now < flyingUntil) return;
+  const cam = graph.cameraPosition();
+  const a = 0.00042;
+  graph.cameraPosition({
+    x: cam.x * Math.cos(a) - cam.z * Math.sin(a),
+    y: cam.y,
+    z: cam.x * Math.sin(a) + cam.z * Math.cos(a)
+  });
+})();
+
+// ---------------------------------------------------------------------------
+// Voice out
+// ---------------------------------------------------------------------------
+let voice = null;
+let audioUnlocked = false;
+const canSpeak = "speechSynthesis" in window;
+
+function pickVoice() {
+  if (!canSpeak) return;
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return;
+  voice = voices.find(function (v) { return /en[-_]GB/i.test(v.lang) && /daniel|arthur|george|oliver|male/i.test(v.name); })
+       || voices.find(function (v) { return /en[-_]GB/i.test(v.lang); })
+       || voices.find(function (v) { return /^en/i.test(v.lang); })
+       || voices[0] || null;
+}
+if (canSpeak) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+function speak(text) {
+  if (!canSpeak || !audioUnlocked || !text) return;
+  try {
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    if (voice) { utter.voice = voice; utter.lang = voice.lang; } else { utter.lang = "en-GB"; }
+    utter.rate = 1.03; utter.pitch = 0.92;
+    utter.onstart = function () { setStatus("● speaking…", "busy"); };
+    utter.onend = function () { setStatus(""); };
+    utter.onerror = function () { setStatus(""); };
+    speechSynthesis.speak(utter);
+  } catch (err) { /* speech is a nicety, never a blocker */ }
+}
+
+// Browsers refuse audio until the user has interacted with the page.
+function unlockAudio() {
+  if (audioUnlocked || !canSpeak) return;
+  audioUnlocked = true;
+  el.unlock.hidden = true;
+  try { speechSynthesis.resume(); speechSynthesis.speak(new SpeechSynthesisUtterance(" ")); } catch (e) {}
+  if (pendingGreeting) { speak(pendingGreeting); pendingGreeting = null; }
+}
+["pointerdown", "keydown"].forEach(function (evt) {
+  addEventListener(evt, unlockAudio, { once: false, passive: true });
+});
+el.unlock.onclick = unlockAudio;
+
+// ---------------------------------------------------------------------------
+// Voice in
+// ---------------------------------------------------------------------------
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recogniser = null;
+let listening = false;
+
+if (!Recognition) {
+  el.mic.disabled = true;
+  el.mic.title = "Speech recognition needs Google Chrome or Edge";
+} else {
+  recogniser = new Recognition();
+  recogniser.lang = "en-GB";
+  recogniser.interimResults = true;
+  recogniser.continuous = false;
+  recogniser.maxAlternatives = 1;
+
+  recogniser.onstart = function () {
+    listening = true; el.mic.classList.add("on"); setStatus("● listening…", "live");
+  };
+  recogniser.onresult = function (event) {
+    let text = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) text += event.results[i][0].transcript;
+    el.input.value = text;
+    if (event.results[event.results.length - 1].isFinal) { stopListening(); submit(text); }
+  };
+  recogniser.onerror = function (event) {
+    stopListening();
+    setStatus(event.error === "not-allowed"
+      ? "Microphone blocked — allow it via the lock icon in the address bar."
+      : "Microphone error: " + event.error);
+  };
+  recogniser.onend = function () { stopListening(); };
+}
+
+function stopListening() {
+  listening = false;
+  el.mic.classList.remove("on");
+  if (el.status.classList.contains("live")) setStatus("");
+}
+
+el.mic.onclick = function () {
+  unlockAudio();
+  if (!recogniser) return;
+  if (listening) { recogniser.stop(); return; }
+  try { recogniser.start(); } catch (err) { /* already running */ }
+};
+
+// ---------------------------------------------------------------------------
+// Console
+// ---------------------------------------------------------------------------
+function setStatus(text, kind) {
+  el.status.textContent = text || "";
+  el.status.className = text ? (kind || "") : "";
+}
+
+function showAnswer(text, sources) {
+  el.answer.textContent = text;
+  if (sources && sources.length) {
+    const cite = document.createElement("span");
+    cite.className = "cited";
+    cite.textContent = "From " + sources.slice(0, 3).join(" · ")
+                     + (sources.length > 3 ? " +" + (sources.length - 3) + " more" : "");
+    el.answer.appendChild(cite);
+  }
+  el.answer.classList.add("show");
+}
+
+async function post(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return { ok: response.ok, data: await response.json() };
+}
+
+const REMEMBER_RE = /^\s*(?:please\s+)?remember\b/i;
+
+async function submit(text) {
+  text = (text || "").trim();
+  if (!text) return;
+  el.input.value = "";
+  el.send.disabled = true;
+  setStatus("● thinking…", "busy");
+  try {
+    if (REMEMBER_RE.test(text)) await capture(text);
+    else await ask(text);
+  } catch (err) {
+    setStatus("");
+    showAnswer("I could not reach the server, sir. Is server.py still running?");
+  } finally {
+    el.send.disabled = false;
+  }
+}
+
+async function ask(text) {
+  const result = await post("/chat", { question: text, session: SESSION });
+  const answer = result.data;
+  setStatus("");
+  showAnswer(answer.answer, answer.sources);
+  speak(answer.answer);
+
+  // Prompt 4: prove where the answer came from.
+  if (!answer.nodes || !answer.nodes.length) return;      // small talk moves nothing
+  const nodes = answer.nodes.map(function (i) { return byId.get(i); }).filter(Boolean);
+  if (!nodes.length) return;
+
+  if (answer.mode === "cluster") {
+    highlight(answer.nodes, false);
+    selectedId = nodes[0].id;
+    openPanel(nodes[0]);
+    flyToCluster(nodes);
+  } else {
+    selectNode(nodes[0], true);
+  }
+}
+
+async function capture(text) {
+  const result = await post("/remember", { text: text });
+  const payload = result.data;
+  setStatus("");
+  if (!result.ok || payload.error) {
+    showAnswer(payload.error || "That did not take, sir.");
+    speak(payload.error || "That did not take, sir.");
+    return;
+  }
+
+  // A star is born, at its most related neighbour's position.
+  const anchor = payload.anchor != null ? byId.get(payload.anchor) : null;
+  const node = payload.node;
+  const jitter = function () { return (Math.random() - 0.5) * 14; };
+  node.x = (anchor ? anchor.x : 0) + jitter();
+  node.y = (anchor ? anchor.y : 0) + jitter();
+  node.z = (anchor ? anchor.z : 0) + jitter();
+
+  const current = graph.graphData();
+  current.nodes.push(node);
+  byId.set(node.id, node);
+  (payload.links || []).forEach(function (l) {
+    current.links.push({ source: l.source, target: l.target, value: l.value });
+  });
+  graph.graphData(current);
+  data.nodes = current.nodes;
+
+  el.noteCount.textContent = payload.total;
+  pulseId = node.id;
+  pulseUntil = Date.now() + 3200;
+
+  selectedId = node.id;
+  highlight([node.id], true);
+  openPanel(node);
+  flyTo(node, 1800);
+
+  showAnswer(payload.answer, [node.label]);
+  speak(payload.answer);
+}
+
+el.bar.onsubmit = function (event) { event.preventDefault(); submit(el.input.value); };
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+let pendingGreeting = null;
+
+fetch("/api/status").then(function (r) { return r.json(); }).then(function (status) {
+  el.noteCount.textContent = status.notes;
+  const labels = {
+    api: "brain: " + (status.model || "anthropic api"),
+    cli: "brain: claude cli",
+    offline: "offline mode — no api key"
+  };
+  el.badge.textContent = labels[status.backend] || status.backend;
+  el.badge.classList.toggle("warn", status.backend === "offline");
+
+  (status.suggestions || []).forEach(function (text) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = text;
+    button.onclick = function () { unlockAudio(); submit(text); };
+    el.suggestions.appendChild(button);
+  });
+
+  showAnswer(status.greeting);
+  pendingGreeting = status.greeting;
+  if (canSpeak && !audioUnlocked) el.unlock.hidden = false;
+}).catch(function () {
+  el.badge.textContent = "server unreachable";
+  el.badge.classList.add("warn");
+  showAnswer("I cannot reach the server, sir. Start it with: python3 server.py");
+});
+
+// Open at a flattering angle rather than staring down the Z axis.
+setTimeout(function () { graph.cameraPosition({ x: 110, y: 75, z: 390 }, { x: 0, y: 0, z: 0 }, 2200); }, 400);
+
+window.JARVIS = { graph: graph, byId: byId, submit: submit, selectNode: selectNode };
+};
+</script>
+</body>
+</html>
