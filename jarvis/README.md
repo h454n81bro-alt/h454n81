@@ -27,6 +27,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Model hot-swap   Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8, Fable 5
   beyond    Time Machine     "what was I doing last Tuesday?"
   beyond    Web research     "research X" — searched, summarised, sources on a card
+  beyond    Screen vision    👁  "Jarvis, what am I looking at?"
 ```
 
 ## Quick start
@@ -79,6 +80,30 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## Screen vision
+
+Press 👁 (or ask *"Jarvis, what am I looking at?"*) and he takes one still frame of a
+screen or window you pick, looks at it, and tells you what's there. Point it at an error
+message, a chart, a form, a page in another language.
+
+- **One frame, then it stops.** The browser's screen-share ends the instant the frame is
+  grabbed — this is a glance, not an open window onto your desktop. The frame is scaled to
+  the model's useful limit (1568px), sent once, and on the CLI path written to a temp file
+  that is deleted in a `finally` block whether the look succeeds or fails. The activity log
+  records *that* you looked, never *what* was on screen.
+- **Same brain as everything else.** It uses the vision of the model you already
+  configured — no new key, no new service. Offline mode says it has no eyes.
+- **Chrome or Edge**, and only over `http://localhost` / `https` — `getDisplayMedia`
+  needs a secure context.
+
+> **A note on testing:** this is the one feature I could not exercise end-to-end in my
+> own sandbox — headless Chromium has no display to capture (`getDisplayMedia` returns
+> `NotReadableError`). So the *reading* half is proven live (JARVIS was handed a
+> hand-built PNG and correctly described "a red square upper-left, a blue band, off-white
+> background"), and the *capture* half is tested for everything except the OS-level grab:
+> the trigger, the downscaling, the secure-context check, and — crucially — that a capture
+> which fails to start reports it and leaves the UI idle rather than wedged.
 
 ## Web research
 
@@ -180,6 +205,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - Drag **Wit** to 0 and **Brevity** to 100, then ask the same question again.
 - Ask a few real questions, then **"What was I doing today?"**
 - **"Research the current price of green coffee"** — and watch the source chips appear.
+- Press **👁** and point him at anything on your screen.
 
 ## How it works
 
@@ -214,7 +240,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 114 tests, standard library only
+python3 tests/test_jarvis.py          # 125 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -224,8 +250,10 @@ a fixed clock, so "last Tuesday" and "this week" have one correct answer) and it
 trigger detection, the activity log and its trimming, web research (trigger anchoring,
 per-model search tool version, citation extraction including the error-shaped result
 that must not be read as a source, and `pause_turn` continuation), session history,
-`/remember`, the HTTP surface, the Anthropic request shape, and the API-key
-containment described above.
+`/remember`, screen vision (frame validation of everything the browser sends —
+foreign media types, rubbish base64, empty and oversized frames — and the API request
+shape with the image leading), the HTTP surface, the Anthropic request shape, and the
+API-key containment described above.
 
 An optional end-to-end test drives the real page in real Chromium:
 
@@ -234,13 +262,14 @@ pip install playwright && playwright install chromium
 python3 tests/browser_smoke.py --shot /tmp/jarvis.png
 ```
 
-60 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
+68 checks: the galaxy renders, the camera flies, the panel opens, the answer cites its
 sources, small talk moves nothing, a new star is born and written to disk, the reactor
 changes state and kicks, the wake word parses commands (including mishearings and
 non-matches), barge-in is safe when he is silent, the dials move and persist, a Time
 Machine question summarises the day's real activity while an empty day is answered
-honestly, research source chips render as safe external links, and the console stays
-free of errors. It runs against a throwaway copy of
+honestly, research source chips render as safe external links, the screen-vision trigger is told
+apart from notes questions and a failed capture leaves the UI idle rather than wedged,
+and the console stays free of errors. It runs against a throwaway copy of
 the project, so your notes are never touched.
 
 ## Troubleshooting
@@ -256,6 +285,8 @@ the project, so your notes are never touched.
 | "The API key in config.json was refused" | The key is wrong, or the placeholder is still in the file. |
 | Answers are generic | The notes path was wrong. Re-run `python3 build.py /full/absolute/path`. |
 | "I have no way to reach the outside world" | Research needs the API or the `claude` CLI; offline mode cannot search. |
+| 👁 does nothing / "This browser will not let me see" | Screen capture needs Chrome or Edge over `localhost`/`https`. |
+| "I have no eyes without a brain behind them" | Vision needs the API or the `claude` CLI; offline mode cannot see. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 
 ## Layout

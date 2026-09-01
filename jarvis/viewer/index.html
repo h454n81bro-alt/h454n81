@@ -279,6 +279,7 @@
   </div>
   <div id="hudTools">
     <button class="tool" id="wake" title="Wake word: say “Jarvis…” (Chrome)">◉</button>
+    <button class="tool" id="eye" title="Show him your screen">👁</button>
     <button class="tool" id="gear" title="Personality and model">⚙</button>
   </div>
 </header>
@@ -450,6 +451,7 @@ const el = {
   reactor: document.getElementById("reactor"),
   core: document.querySelector("#reactor .core"),
   wake: document.getElementById("wake"),
+  eye: document.getElementById("eye"),
   gear: document.getElementById("gear"),
   settings: document.getElementById("settings"),
   modelPick: document.getElementById("modelPick")
@@ -954,6 +956,101 @@ el.wake.onclick = function () {
 };
 
 // ---------------------------------------------------------------------------
+// Screen vision — "Jarvis, what am I looking at?"
+// ---------------------------------------------------------------------------
+const VISION_MAX_EDGE = 1568;   // beyond this the model gains nothing and you pay for it
+
+const WANTS_SCREEN = new RegExp(
+  "^(?:jarvis[,\\s]+)?(?:please\\s+)?(?:" +
+  "what(?:'s| is| am i)\\b[^?]*\\b(?:screen|looking at)" +
+  "|look at (?:my|the|this) screen" +
+  "|read (?:my|the|this) screen" +
+  "|describe (?:my|the|this) screen" +
+  "|what does this (?:say|show)" +
+  "|check (?:my|the) screen" +
+  ")", "i");
+
+function wantsScreen(text) { return WANTS_SCREEN.test((text || "").trim()); }
+
+/** Fit within a square of maxEdge without ever scaling up. */
+function scaledSize(width, height, maxEdge) {
+  const scale = Math.min(1, maxEdge / Math.max(width || 1, height || 1));
+  return { width: Math.max(1, Math.round(width * scale)),
+           height: Math.max(1, Math.round(height * scale)) };
+}
+
+function canCapture() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+}
+
+/** Grab exactly one frame, then stop sharing immediately. */
+async function captureScreen() {
+  if (!canCapture()) throw new Error("unsupported");
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: { frameRate: 1 }, audio: false
+  });
+  try {
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    await video.play();
+    // Give the compositor a moment, or the first frame comes back blank.
+    await new Promise(function (resolve) { setTimeout(resolve, 300); });
+
+    const size = scaledSize(video.videoWidth, video.videoHeight, VISION_MAX_EDGE);
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    canvas.getContext("2d").drawImage(video, 0, 0, size.width, size.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } finally {
+    // One look, not an open window onto the user's desktop.
+    stream.getTracks().forEach(function (track) { track.stop(); });
+  }
+}
+
+async function look(question) {
+  if (!canCapture()) {
+    showAnswer("This browser will not let me see the screen, sir. Chrome or Edge, ideally.");
+    return;
+  }
+  let dataUrl;
+  try {
+    dataUrl = await captureScreen();
+  } catch (err) {
+    setStatus("");
+    reactor.set(listening ? "listening" : "idle");
+    // A cancelled picker is a decision, not a failure — say nothing dramatic.
+    showAnswer(err && err.name === "NotAllowedError"
+      ? "Very good, sir — I saw nothing."
+      : "I could not get a look at the screen, sir.");
+    return;
+  }
+
+  setStatus("● looking…", "busy");
+  reactor.set("thinking");
+  const comma = dataUrl.indexOf(",");
+  const mediaType = dataUrl.slice(5, dataUrl.indexOf(";"));
+  const result = await post("/vision", {
+    question: question, image: dataUrl.slice(comma + 1), media_type: mediaType,
+    session: SESSION, dials: dials, model: chosenModel
+  });
+  setStatus("");
+  reactor.set(listening ? "listening" : "idle");
+  showAnswer(result.data.answer);
+  speak(result.data.answer);
+}
+
+el.eye.onclick = function () {
+  unlockAudio();
+  stopSpeaking();
+  const typed = el.input.value.trim();
+  el.input.value = "";
+  look(typed || "What am I looking at?");
+};
+
+// ---------------------------------------------------------------------------
 // Console
 // ---------------------------------------------------------------------------
 function setStatus(text, kind) {
@@ -1021,6 +1118,7 @@ async function submit(text) {
   }, 6000);
   try {
     if (REMEMBER_RE.test(text)) await capture(text);
+    else if (wantsScreen(text)) await look(text);
     else await ask(text);
   } catch (err) {
     setStatus("");
@@ -1156,6 +1254,8 @@ window.JARVIS = {
   graph: graph, byId: byId, submit: submit, selectNode: selectNode,
   extractCommand: extractCommand, stopSpeaking: stopSpeaking, reactor: reactor,
   showAnswer: showAnswer, domainOf: domainOf,
+  wantsScreen: wantsScreen, scaledSize: scaledSize, canCapture: canCapture,
+  captureScreen: captureScreen, look: look,
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }

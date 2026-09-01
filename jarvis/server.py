@@ -13,6 +13,7 @@ anything outside viewer/. Your API key cannot reach the browser.
 """
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -21,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -42,6 +44,8 @@ TOP_K = 6              # notes handed to the model
 FLY_THRESHOLD = 3      # below this the question isn't really about the notes
 CONTEXT_WEIGHT = 0.45  # how much the previous question counts when resolving "that"
 WEB_SEARCH_MAX_USES = 5
+VISION_MAX_BYTES = 6 * 1024 * 1024        # the browser downscales before sending
+VISION_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
 # Dynamic filtering exists on these; anything else (Haiku 4.5, older) gets the
 # basic search tool, which every model accepts.
@@ -156,6 +160,10 @@ Search, then give them the finding in your own voice, in two or three sentences.
 CLI_SOURCE_TRAILER = """
 
 When you have finished your reply, add one final line beginning with SOURCES: followed by the URLs you actually used, separated by spaces. That line is stripped out before your reply is read aloud — it exists only so the sources can be displayed on screen."""
+
+VISION_BRIEF = """The user has shared a still frame of their screen and asked you about it. Answer from what is actually visible in the image — this is not a question about their notes.
+
+Say what matters in two or three sentences: the thing they asked about first. Do not narrate the whole screen, do not list every window, and never guess at text you cannot actually read. If the image is too small or blurred to make out, say so plainly."""
 
 SYSTEM_PROMPT = compose_system_prompt()
 
@@ -609,6 +617,63 @@ def split_sources(text):
     return text, citations
 
 
+def call_anthropic_vision(config, system, question, image_b64, media_type, model, timeout=120):
+    body = _anthropic_request(config, {
+        "model": model,
+        "max_tokens": 2048,
+        "system": system,
+        "messages": [{"role": "user", "content": [
+            # The image goes before the text: Claude reads the picture, then the ask.
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": media_type, "data": image_b64}},
+            {"type": "text", "text": question},
+        ]}],
+        "output_config": {"effort": "low"},
+    }, timeout)
+
+    text = "".join(block.get("text", "") for block in body.get("content", [])
+                   if isinstance(block, dict) and block.get("type") == "text").strip()
+    if not text:
+        raise BackendError("I could make nothing of that image, sir.")
+    return text
+
+
+def call_claude_cli_vision(system, question, image_path, timeout=180):
+    """The CLI reads the frame off disk rather than taking it inline."""
+    prompt = ("%s\n\nLook at the image file at %s, then answer.\n\nUser: %s"
+              % (system, image_path, question))
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--allowedTools", "Read"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise BackendError("The claude CLI is not on PATH, sir.")
+    except subprocess.TimeoutExpired:
+        raise BackendError("Looking at that took too long, sir.")
+    if result.returncode != 0:
+        raise BackendError("claude CLI failed: %s" % (result.stderr or "").strip()[:300])
+    text = result.stdout.strip()
+    if not text:
+        raise BackendError("I could make nothing of that image, sir.")
+    return text
+
+
+def decode_frame(image_b64, media_type):
+    """Validate what the browser sent before it goes anywhere near the model."""
+    if media_type not in VISION_MEDIA_TYPES:
+        raise BackendError("That is not an image format I can read, sir.")
+    try:
+        raw = base64.b64decode(image_b64 or "", validate=True)
+    except (ValueError, TypeError):
+        raise BackendError("That image did not survive the journey, sir.")
+    if not raw:
+        raise BackendError("The screen came through empty, sir.")
+    if len(raw) > VISION_MAX_BYTES:
+        raise BackendError("That frame is too large to send, sir.")
+    return raw
+
+
 def call_claude_cli_research(system, question, timeout=300):
     """Research on a Claude Code subscription, using the CLI's own WebSearch tool."""
     prompt = "%s%s\n\nUser: %s\n\nSearch the web, then reply in character." % (
@@ -843,6 +908,60 @@ class Jarvis(object):
             "sources": [graph_nodes[i]["label"] for i in node_ids],
             "backend": self.backend,
             "mode": mode,
+            "model": model if self.backend != "offline" else None,
+        }
+
+    # -- screen vision ------------------------------------------------------
+    def look(self, question, image_b64, media_type="image/jpeg",
+             session_id="default", dials=None, model=None):
+        question = (question or "").strip() or "What am I looking at?"
+
+        if self.backend == "offline":
+            return {"answer": ("I have no eyes without a brain behind them, sir — "
+                               "vision needs the API or the CLI."),
+                    "nodes": [], "sources": [], "backend": self.backend,
+                    "mode": "idle", "model": None}
+
+        try:
+            raw = decode_frame(image_b64, media_type)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+
+        model = resolve_model(model, self.config)
+        system = compose_system_prompt(dials) + "\n\n" + VISION_BRIEF
+
+        temp_path = None
+        try:
+            if self.backend == "api":
+                answer = call_anthropic_vision(
+                    self.config, system, question, image_b64, media_type, model)
+            else:
+                suffix = "." + media_type.split("/")[-1].replace("jpeg", "jpg")
+                handle, temp_path = tempfile.mkstemp(prefix="jarvis-frame-", suffix=suffix)
+                with os.fdopen(handle, "wb") as fh:
+                    fh.write(raw)
+                answer = call_claude_cli_vision(system, question, temp_path)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+        finally:
+            # The frame is the user's screen. It does not linger on disk.
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+        answer = tidy(answer)
+        with self.lock:
+            self.remember_turn(session_id, question, answer)
+        # Log that a look happened; never what was on screen.
+        self.log_activity("vision", session_id, question, [])
+
+        return {
+            "answer": answer, "nodes": [], "sources": [],
+            "backend": self.backend, "mode": "vision",
             "model": model if self.backend != "offline" else None,
         }
 
@@ -1180,13 +1299,24 @@ class JarvisHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?", 1)[0]
-        payload = self.read_json()
+        # A screen frame is orders of magnitude larger than a question.
+        limit = 12 * 1024 * 1024 if route == "/vision" else 64 * 1024
+        payload = self.read_json(limit=limit)
         if payload is None:
             return self.send_error_json(400, "Expected a JSON body")
 
         if route == "/chat":
             return self.send_json(self.jarvis.ask(
                 payload.get("question", ""),
+                payload.get("session") or "default",
+                dials=payload.get("dials"),
+                model=payload.get("model")))
+
+        if route == "/vision":
+            return self.send_json(self.jarvis.look(
+                payload.get("question", ""),
+                payload.get("image", ""),
+                payload.get("media_type") or "image/jpeg",
                 payload.get("session") or "default",
                 dials=payload.get("dials"),
                 model=payload.get("model")))

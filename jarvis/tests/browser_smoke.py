@@ -43,6 +43,15 @@ def wait_for(url, timeout=25):
     raise RuntimeError("server never came up at " + url)
 
 
+def wait_until(page, expression, timeout=25000):
+    """True if the condition arrived; False on timeout — never raises."""
+    try:
+        page.wait_for_function(expression, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 class Check(object):
     def __init__(self):
         self.failures = []
@@ -294,6 +303,57 @@ def main():
                 "? !document.getElementById('wake').disabled "
                 ": document.getElementById('wake').disabled"))
 
+            # -- screen vision ----------------------------------------------
+            # The grab itself needs a real display, which headless Chromium has not
+            # got; everything around it is exercised, including the failure path.
+            vision_cases = [
+                ("what am I looking at?", True),
+                ("Jarvis, what's on my screen", True),
+                ("look at my screen", True),
+                ("read my screen", True),
+                ("what does this say", True),
+                ("what is our pricing strategy", False),
+                ("what was I doing yesterday", False),
+                ("research the coffee market", False),
+                ("remember that the roaster arrives", False),
+            ]
+            vision_ok = True
+            for said, expected in vision_cases:
+                got = page.evaluate("window.JARVIS.wantsScreen(%s)" % json.dumps(said))
+                if got != expected:
+                    vision_ok = False
+                    print("        vision trigger: %r -> %r, expected %r" % (said, got, expected))
+            check.that("screen requests are told apart from notes questions (%d cases)"
+                       % len(vision_cases), vision_ok)
+
+            check.that("a big screen is scaled down to the model's useful limit", page.evaluate(
+                "JSON.stringify(window.JARVIS.scaledSize(3840, 2160, 1568))")
+                == '{"width":1568,"height":882}')
+            check.that("a small screen is never scaled up", page.evaluate(
+                "JSON.stringify(window.JARVIS.scaledSize(800, 600, 1568))")
+                == '{"width":800,"height":600}')
+            check.that("capture is available in a secure context",
+                       page.evaluate("window.JARVIS.canCapture()") is True)
+            check.that("the eye button is wired", page.evaluate(
+                "typeof document.getElementById('eye').onclick === 'function'"))
+
+            # A capture that cannot start must not strand the UI. Stub getDisplayMedia
+            # to reject the way a denied or headless capture does — calling the real
+            # one shows a screen-picker that never resolves and wedges the test.
+            page.evaluate("""() => {
+              navigator.mediaDevices.getDisplayMedia = () =>
+                Promise.reject(Object.assign(new Error('no source'),
+                                             {name: 'NotReadableError'}));
+              document.getElementById('answer').innerText = '';
+              window.JARVIS.look('what am I looking at?');
+            }""")
+            check.that("a failed capture is reported, not swallowed",
+                       wait_until(page, "/screen|saw nothing/i.test("
+                                      "document.getElementById('answer').innerText)", 15000),
+                       page.inner_text("#answer")[:80])
+            check.that("a failed capture leaves the reactor idle, not stuck thinking",
+                       page.evaluate("window.JARVIS.reactor.state") != "thinking")
+
             # -- research: source chips render and open externally -----------
             check.that("domain labels are derived from the URL", page.evaluate(
                 "window.JARVIS.domainOf('https://www.barchart.com/futures/quotes/kc')")
@@ -318,11 +378,11 @@ def main():
             # -- Time Machine: what was I doing today? -----------------------
             page.fill("#q", "what was I doing today?")
             page.press("#q", "Enter")
-            page.wait_for_function(
-                "document.getElementById('answer').innerText.indexOf('thinking') === -1",
-                timeout=25000)
-            page.wait_for_timeout(2200)
+            # Offline mode phrases this deterministically: "On today, sir: ..."
+            arrived = wait_until(page, "/on today, sir/i.test("
+                                     "document.getElementById('answer').innerText)", 30000)
             tm_answer = page.inner_text("#answer")
+            check.that("time machine answered at all", arrived, tm_answer[:80])
             check.that("time machine summarises today's real activity",
                        "question" in tm_answer.lower() and "note" in tm_answer.lower(),
                        tm_answer[:120])
@@ -332,9 +392,10 @@ def main():
             # A day with nothing logged must be answered honestly, not guessed at.
             page.fill("#q", "what did I do 3 days ago?")
             page.press("#q", "Enter")
-            page.wait_for_timeout(2200)
             check.that("an empty day says so plainly",
-                       "nothing on record" in page.inner_text("#answer").lower())
+                       wait_until(page, "/nothing on record/i.test("
+                                      "document.getElementById('answer').innerText)", 30000),
+                       page.inner_text("#answer")[:80])
 
             check.that("still no console errors after the whole flow",
                        not errors, errors[:3])

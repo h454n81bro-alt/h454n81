@@ -4,6 +4,7 @@
     python3 tests/test_jarvis.py           # or: python3 -m unittest discover tests
 """
 
+import base64
 import json
 import os
 import re
@@ -311,6 +312,92 @@ class StubbedJarvis(TempVault):
 
         server.call_anthropic = fake
         self.addCleanup(setattr, server, "call_anthropic", original)
+
+
+def tiny_png(width=8, height=8, rgb=(200, 30, 30)):
+    """A real, valid PNG built with the standard library only."""
+    import struct, zlib
+    rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows))
+            + chunk(b"IEND", b""))
+
+
+class TestVisionFrameValidation(unittest.TestCase):
+    """Everything the browser sends is untrusted until it decodes."""
+
+    def test_a_real_png_decodes(self):
+        raw = server.decode_frame(base64.b64encode(tiny_png()).decode(), "image/png")
+        self.assertTrue(raw.startswith(b"\x89PNG"))
+
+    def test_every_supported_type_is_accepted(self):
+        payload = base64.b64encode(tiny_png()).decode()
+        for media_type in server.VISION_MEDIA_TYPES:
+            self.assertTrue(server.decode_frame(payload, media_type))
+
+    def test_a_foreign_media_type_is_refused(self):
+        payload = base64.b64encode(tiny_png()).decode()
+        for media_type in ["application/pdf", "text/html", "image/svg+xml", "", None]:
+            with self.assertRaises(server.BackendError, msg=media_type):
+                server.decode_frame(payload, media_type)
+
+    def test_rubbish_base64_is_refused(self):
+        for payload in ["not base64!!", "%%%%", "a"]:
+            with self.assertRaises(server.BackendError, msg=payload):
+                server.decode_frame(payload, "image/png")
+
+    def test_an_empty_frame_is_refused(self):
+        for payload in ["", None]:
+            with self.assertRaises(server.BackendError):
+                server.decode_frame(payload, "image/png")
+
+    def test_an_oversized_frame_is_refused(self):
+        huge = base64.b64encode(b"\x00" * (server.VISION_MAX_BYTES + 1024)).decode()
+        with self.assertRaises(server.BackendError):
+            server.decode_frame(huge, "image/png")
+
+
+class TestVisionApiRequest(unittest.TestCase):
+
+    def test_the_image_leads_and_the_question_follows(self):
+        sent = {}
+
+        def fake(config, payload, timeout):
+            sent.update(payload)
+            return {"stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "A red square, sir."}]}
+
+        original = server._anthropic_request
+        server._anthropic_request = fake
+        try:
+            text = server.call_anthropic_vision(
+                {"api_key": "k"}, "system", "what is this?",
+                base64.b64encode(tiny_png()).decode(), "image/png", "claude-opus-5")
+        finally:
+            server._anthropic_request = original
+
+        self.assertEqual(text, "A red square, sir.")
+        content = sent["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "image", "the image must come first")
+        self.assertEqual(content[0]["source"]["media_type"], "image/png")
+        self.assertEqual(content[1]["type"], "text")
+        self.assertEqual(sent["model"], "claude-opus-5")
+
+    def test_an_empty_reply_is_an_error(self):
+        original = server._anthropic_request
+        server._anthropic_request = lambda c, p, t: {"content": []}
+        try:
+            with self.assertRaises(server.BackendError):
+                server.call_anthropic_vision({"api_key": "k"}, "s", "q", "x", "image/png",
+                                             "claude-opus-5")
+        finally:
+            server._anthropic_request = original
 
 
 class TestResearchTrigger(unittest.TestCase):
@@ -763,6 +850,13 @@ class TestTimeMachineActivity(unittest.TestCase):
         self.assertEqual(entries[0]["kind"], "remember")
         self.assertEqual(entries[0]["nodes"], [result["node"]["id"]])
 
+    def test_vision_offline_admits_it_cannot_see(self):
+        result = self.jarvis.look("what am I looking at?",
+                                  base64.b64encode(tiny_png()).decode(), "image/png")
+        self.assertEqual(result["mode"], "idle")
+        self.assertEqual(result["nodes"], [])
+        self.assertIn("sir", result["answer"])
+
     def test_research_offline_admits_it_cannot_reach_the_web(self):
         result = self.jarvis.ask("research the price of green coffee", "s1")
         self.assertEqual(result["mode"], "idle")
@@ -1002,6 +1096,22 @@ class TestHttp(TempVault):
         self.assertIn("1 question", payload["answer"])
         self.assertIn("1 note", payload["answer"])
         self.assertTrue(payload["nodes"])
+
+    def test_vision_round_trip_over_http(self):
+        status, payload = self.post("/vision", {
+            "question": "what am I looking at?",
+            "image": base64.b64encode(tiny_png()).decode(),
+            "media_type": "image/png",
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["answer"])          # offline backend declines politely
+        self.assertEqual(payload["nodes"], [])
+
+    def test_vision_rejects_a_bad_frame_without_crashing(self):
+        status, payload = self.post("/vision", {"question": "?", "image": "not base64!!",
+                                                "media_type": "image/png"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["answer"])
 
     def test_chat_round_trip(self):
         status, payload = self.post("/chat", {"question": "what is the wholesale margin",
