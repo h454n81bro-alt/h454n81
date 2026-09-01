@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import build
+import google_api
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VIEWER_DIR = os.path.join(HERE, "viewer")
@@ -168,6 +169,34 @@ Search, then give them the finding in your own voice, in two or three sentences.
 CLI_SOURCE_TRAILER = """
 
 When you have finished your reply, add one final line beginning with SOURCES: followed by the URLs you actually used, separated by spaces. That line is stripped out before your reply is read aloud — it exists only so the sources can be displayed on screen."""
+
+BRIEF_PROMPT = """The user wants their morning brief — what is in their real inbox and on their real calendar today. This is not a question about their notes.
+
+Deliver it as a butler would over coffee: two or three short sentences, spoken aloud. Lead with what actually needs them — an email that wants a reply, a meeting that is soon. Name senders and times; do not read out email bodies or every subject line. If the inbox and calendar are both quiet, say so with relief, not padding. Never invent a sender, a subject, or an appointment that is not in the data below."""
+
+# A greeting only means "brief me" when it is essentially the whole message —
+# "good morning" or "good morning, Jarvis", not "good morning is a nice greeting".
+_BRIEF_GREETING = re.compile(
+    r"^(?:good morning|morning)"
+    r"(?:[,\s]+(?:sir|jarvis|to you|everyone|all|there|then))*[.!?]*\s*$", re.I)
+
+# The explicit requests, anchored to the start of the sentence.
+_BRIEF_COMMAND = re.compile(
+    r"^(?:jarvis[,\s]+)?(?:please\s+|can you\s+|could you\s+|give me\s+)*"
+    r"(morning brief(?:ing)?\b"
+    r"|brief me\b"
+    r"|(?:the\s+)?(?:daily\s+)?brief(?:ing)?\b"
+    r"|what'?s on (?:today|for (?:today|the day)|my (?:plate|calendar|schedule|agenda))\b"
+    r"|what(?:'?s| is| do i have) (?:up |on )?(?:today|this morning)\b"
+    r"|what needs me\b"
+    r"|any (?:important |new |unread )?(?:e-?mails?|mail|messages?|meetings?)\b"
+    r"|catch me up on (?:my )?(?:inbox|e-?mail|day|morning)\b)", re.I)
+
+
+def is_brief_query(question):
+    question = (question or "").strip()
+    return bool(_BRIEF_GREETING.match(question) or _BRIEF_COMMAND.match(question))
+
 
 VISION_BRIEF = """The user has shared a still frame of their screen and asked you about it. Answer from what is actually visible in the image — this is not a question about their notes.
 
@@ -859,6 +888,7 @@ class Jarvis(object):
 
         # Cloned-voice TTS is optional. Probe once so the browser knows which voice
         # path to take; the key itself never leaves this process.
+        self.google_ready = google_api.is_ready(config)
         self.tts_available = eleven_key(config) is not None
         self.voices = eleven_voices(config) if self.tts_available else []
         configured = (config.get("elevenlabs") or {}).get("voice_id")
@@ -964,6 +994,9 @@ class Jarvis(object):
         if not question:
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
+
+        if is_brief_query(question):
+            return self._brief_answer(question, session_id, dials, model)
 
         topic = extract_research_topic(question)
         if topic:
@@ -1078,6 +1111,68 @@ class Jarvis(object):
         return {
             "answer": answer, "nodes": [], "sources": [],
             "backend": self.backend, "mode": "vision",
+            "model": model if self.backend != "offline" else None,
+        }
+
+    # -- morning brief ------------------------------------------------------
+    def brief_data(self):
+        """The raw inbox + calendar for today. Raises GoogleError on failure."""
+        token = google_api.access_token(self.config)
+        g = self.config.get("google") or {}
+        emails = google_api.recent_email(
+            token, query=g.get("mail_query",
+                               "is:unread -category:promotions -category:social"),
+            max_results=int(g.get("max_emails", 8)))
+        events = google_api.todays_events(token, calendar_id=g.get("calendar_id", "primary"))
+        return emails, events
+
+    def _brief_answer(self, question, session_id, dials, model):
+        if not self.google_ready:
+            return {"answer": ("I have no line to your inbox or calendar, sir — run "
+                               "setup_google.py and I shall."),
+                    "nodes": [], "sources": [], "backend": self.backend,
+                    "mode": "idle", "model": None}
+        if self.backend == "offline":
+            return {"answer": ("I can reach your inbox but not my own wits, sir — the brief "
+                               "needs the API or the CLI to write it."),
+                    "nodes": [], "sources": [], "backend": self.backend,
+                    "mode": "idle", "model": None}
+
+        try:
+            emails, events = self.brief_data()
+        except google_api.GoogleError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+
+        summary = format_brief(emails, events, datetime.now())
+        model = resolve_model(model, self.config)
+        system = compose_system_prompt(dials) + "\n\n" + BRIEF_PROMPT
+        with self.lock:
+            history = list(self.history(session_id))
+        prompt = ("Here is the real inbox and calendar to brief from:\n\n%s\n\n---\n"
+                  "The user asks: %s" % (summary, question))
+        messages = history + [{"role": "user", "content": prompt}]
+
+        try:
+            if self.backend == "api":
+                answer = call_anthropic(self.config, system, messages, model=model)
+            else:
+                answer = call_claude_cli(system, messages, model=model)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+
+        answer = tidy(answer)
+        with self.lock:
+            self.remember_turn(session_id, question, answer)
+        self.log_activity("brief", session_id, "morning brief", [])
+
+        # The brief is about the world, not the vault — the galaxy stays put, but the
+        # structured inbox/calendar go to the browser for a card beside the answer.
+        return {
+            "answer": answer, "nodes": [], "sources": [],
+            "backend": self.backend, "mode": "brief",
+            "brief": {"emails": emails, "events": events},
             "model": model if self.backend != "offline" else None,
         }
 
@@ -1263,6 +1358,30 @@ class Jarvis(object):
         }
 
 
+def format_brief(emails, events, now):
+    """A compact plain-text digest of inbox + calendar for the model to speak from."""
+    lines = ["Brief for %s." % now.strftime("%A %-d %B, %-I:%M %p").replace(" 0", " ")]
+
+    if events:
+        lines.append("\nCalendar today (%d):" % len(events))
+        for e in events:
+            where = (" @ " + e["location"]) if e.get("location") else ""
+            lines.append("- %s: %s%s" % (e["when"], e["summary"], where))
+    else:
+        lines.append("\nCalendar today: nothing scheduled.")
+
+    if emails:
+        unread = sum(1 for e in emails if e.get("unread"))
+        lines.append("\nInbox (%d shown, %d unread):" % (len(emails), unread))
+        for e in emails:
+            snippet = (" — " + e["snippet"][:90]) if e.get("snippet") else ""
+            lines.append("- %s: %s%s" % (e["from"], e["subject"], snippet))
+    else:
+        lines.append("\nInbox: nothing new.")
+
+    return "\n".join(lines)
+
+
 def tidy(answer):
     """Strip markdown the model shouldn't have used — it all gets spoken aloud."""
     answer = re.sub(r"^\s*[-*•]\s+", "", answer, flags=re.MULTILINE)
@@ -1381,8 +1500,18 @@ class JarvisHandler(BaseHTTPRequestHandler):
         return real
 
     # -- routes -----------------------------------------------------------
+    def path_query(self, key):
+        parts = self.path.split("?", 1)
+        if len(parts) < 2:
+            return None
+        return dict(urllib.parse.parse_qsl(parts[1])).get(key)
+
     def do_GET(self):
         route = self.path.split("?", 1)[0]
+
+        if route == "/brief":
+            return self.send_json(self.jarvis.ask("good morning",
+                                                  self.path_query("session") or "brief"))
 
         if route == "/api/status":
             j = self.jarvis
@@ -1397,6 +1526,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "defaultModel": resolve_model(None, j.config) if j.backend != "offline" else None,
                 "dials": DEFAULT_DIALS,
                 "tts": j.tts_status(),
+                "brief": j.google_ready and j.backend != "offline",
             })
 
         target = self.resolve_static(route)
@@ -1509,6 +1639,8 @@ def main(argv=None):
     print("\n  JARVIS online.")
     print("  %d notes indexed from %s" % (jarvis.note_count, jarvis.notes_dir))
     print("  Brain: %s" % backend_note)
+    if jarvis.google_ready:
+        print("  Brief: Gmail + Calendar connected")
     if jarvis.tts_available and jarvis.default_voice:
         print("  Voice: ElevenLabs (%d voice(s) available)" % len(jarvis.voices))
     elif jarvis.config.get("elevenlabs", {}).get("api_key"):

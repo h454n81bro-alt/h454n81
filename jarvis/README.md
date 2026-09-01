@@ -29,6 +29,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Web research     "research X" — searched, summarised, sources on a card
   beyond    Screen vision    👁  "Jarvis, what am I looking at?"
   beyond    Cloned voice     ElevenLabs — the reactor pulses to his real waveform
+  beyond    Morning brief    "Good morning" — real Gmail + Calendar, inbox triage
 ```
 
 ## Quick start
@@ -81,6 +82,42 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## Morning brief (Gmail + Calendar)
+
+Say **"good morning"** (or "brief me", "what needs me", "what's on today") and he reads
+your real inbox and calendar back as a butler would over coffee — leading with what
+actually needs you, an email that wants a reply before a meeting it relates to, the
+promo quietly dropped. The structured inbox and calendar appear on a card beside the
+spoken brief. Like research, it is about the world, so the galaxy stays put.
+
+It is **read-only** — Gmail and Calendar readonly scopes; it sends nothing and changes
+nothing — and, like the rest of JARVIS, **zero dependency**: OAuth2 and both Google
+REST APIs are just HTTPS, so `google_api.py` speaks them over the standard library
+rather than pulling in `google-api-python-client`.
+
+**One-time setup** (five minutes, on your own machine):
+
+```bash
+python3 setup_google.py
+```
+
+That walks you through it: create a Google Cloud OAuth "Desktop app" client (Gmail API
++ Calendar API enabled), paste the client ID and secret, approve read-only access in
+your browser, and it writes a **refresh token** into `config.json`. The consent happens
+in your browser against your Google account; the token is written on your machine and
+**never leaves the server** — the browser only ever receives the finished brief.
+
+> **Setup happens on your computer, not here.** Google's consent flow opens a browser
+> and redirects to `localhost` bound to your Google login, so it cannot run in this
+> sandbox — which is exactly why `setup_google.py` is a script you run yourself. The
+> integration is tested with Google's HTTP layer stubbed (token refresh, message and
+> event parsing, the 403 that tells you to re-run setup); the brief composition and the
+> card are proven live with stubbed inbox data feeding the real model.
+
+The trigger is deliberately narrow: a greeting only briefs when it *is* the message
+("good morning", "good morning, Jarvis"), never "good morning is a nice line for the
+newsletter", and a notes question that merely contains "email" stays a notes question.
 
 ## A cloned voice (ElevenLabs)
 
@@ -246,6 +283,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - **"Research the current price of green coffee"** — and watch the source chips appear.
 - Press **👁** and point him at anything on your screen.
 - Add an ElevenLabs key and watch the reactor pulse to his real voice.
+- Connect Google and say **"good morning"** for a brief off your real inbox.
 
 ## How it works
 
@@ -280,7 +318,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 136 tests, standard library only
+python3 tests/test_jarvis.py          # 153 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -294,7 +332,9 @@ that must not be read as a source, and `pause_turn` continuation), session histo
 foreign media types, rubbish base64, empty and oversized frames — and the API request
 shape with the image leading), the ElevenLabs voice proxy (voice loading, the
 key travelling as a header only and never in the URL, body, or any served response,
-and graceful failure), the HTTP surface, the Anthropic request shape, and the
+and graceful failure), the Google brief (OAuth token refresh and consent-URL shape,
+Gmail and Calendar parsing, the brief trigger's greeting-vs-command split, and the
+whole brief flow with Google and the model stubbed), the HTTP surface, the Anthropic request shape, and the
 API-key containment described above.
 
 An optional end-to-end test drives the real page in real Chromium:
@@ -311,7 +351,8 @@ non-matches), barge-in is safe when he is silent, the dials move and persist, a 
 Machine question summarises the day's real activity while an empty day is answered
 honestly, research source chips render as safe external links, the screen-vision trigger is told
 apart from notes questions and a failed capture leaves the UI idle rather than wedged,
-the cloned-voice audio path plays and pulses the reactor to a real waveform, and the
+the cloned-voice audio path plays and pulses the reactor to a real waveform, the
+morning-brief card lists today's events and inbox without leaking email bodies, and the
 console stays free of errors. It runs against a throwaway copy of
 the project, so your notes are never touched.
 
@@ -330,6 +371,8 @@ the project, so your notes are never touched.
 | "I have no way to reach the outside world" | Research needs the API or the `claude` CLI; offline mode cannot search. |
 | 👁 does nothing / "This browser will not let me see" | Screen capture needs Chrome or Edge over `localhost`/`https`. |
 | "I have no eyes without a brain behind them" | Vision needs the API or the `claude` CLI; offline mode cannot see. |
+| "I have no line to your inbox" | Run `python3 setup_google.py` to connect Gmail + Calendar. |
+| "Google refused the request (403)" | The token was revoked or scopes changed — re-run `setup_google.py`. |
 | Still hear the browser voice with a key set | Check `config.json`'s `elevenlabs.api_key`, and pick a voice in the ⚙ panel. A refused key falls back silently to the browser voice. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 
@@ -340,7 +383,9 @@ jarvis/
 ├── build.py              scans .md, writes viewer/graph-data.js
 ├── seed_notes.py         25 sample notes for a small coffee roastery
 ├── server.py             static server + /chat + /remember + /api/status
-├── config.example.json   copied to config.json on first run (Anthropic + ElevenLabs)
+├── config.example.json   copied to config.json on first run (Anthropic + ElevenLabs + Google)
+├── google_api.py         Gmail + Calendar over stdlib (no google client library)
+├── setup_google.py       one-time OAuth sign-in for the morning brief
 ├── activity.log          Time Machine's memory — gitignored, created on first use
 ├── notes/                your markdown (sample vault by default)
 ├── viewer/

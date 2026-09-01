@@ -267,6 +267,28 @@ def main():
             check.that("Escape does not throw or break the page",
                        page.evaluate("window.JARVIS.speaking()") is False)
 
+            # -- morning brief card (rendered directly; no Google in this test) ---
+            page.evaluate("""() => window.JARVIS.showAnswer(
+              'Good morning, sir. Standup at 9:15, then the hotel call at two.',
+              [], null,
+              { events: [{when:'9:15 AM', summary:'Standup', location:'Roastery'},
+                         {when:'2:00 PM', summary:'Two Rivers call', location:''}],
+                emails: [{from:'Dani', subject:'Roaster quote', unread:true},
+                         {from:'Newsletter', subject:'10% off', unread:false}] })""")
+            check.that("the brief renders a card", page.locator("#answer .brief").count() == 1)
+            check.that("today's events are listed",
+                       page.locator("#answer .brief .col").nth(0).locator(".item").count() == 2)
+            check.that("inbox items are listed",
+                       page.locator("#answer .brief .col").nth(1).locator(".item").count() == 2)
+            check.that("an unread email shows the dot, a read one does not", page.evaluate(
+                "document.querySelectorAll('#answer .brief .item.read').length") == 1)
+            check.that("no email body text leaks into the card",
+                       "10% off" in page.inner_text("#answer")
+                       and "unread" not in page.inner_text("#answer").lower())
+            page.evaluate("() => window.JARVIS.showAnswer('plain', [], null, null)")
+            check.that("an answer with no brief renders no card",
+                       page.locator("#answer .brief").count() == 0)
+
             # -- voice (ElevenLabs when configured; here it is not) ----------
             check.that("reactor exposes a live-amplitude hook", page.evaluate(
                 "typeof window.JARVIS.reactor.amp === 'function'"))

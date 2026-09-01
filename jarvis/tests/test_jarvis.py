@@ -21,6 +21,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import build
+import google_api
 import seed_notes
 import server
 
@@ -328,6 +329,135 @@ def tiny_png(width=8, height=8, rgb=(200, 30, 30)):
             + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows))
             + chunk(b"IEND", b""))
+
+
+class TestGoogleApi(unittest.TestCase):
+    """Gmail + Calendar over stdlib, with Google's HTTP layer stubbed."""
+
+    def setUp(self):
+        self._orig = urllib.request.urlopen
+        self.addCleanup(setattr, urllib.request, "urlopen", self._orig)
+
+    def stub(self, router):
+        """router(url, method, data) -> dict; installed as urlopen."""
+        def fake(request, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            method = "GET" if isinstance(request, str) else request.method
+            data = None if isinstance(request, str) else request.data
+            payload = router(url, method, data)
+
+            class Resp(object):
+                def __enter__(self_): return self_
+                def __exit__(self_, *a): return False
+                def read(self_): return json.dumps(payload).encode()
+            return Resp()
+        urllib.request.urlopen = fake
+
+    def test_is_ready_needs_all_three(self):
+        self.assertFalse(google_api.is_ready({}))
+        self.assertFalse(google_api.is_ready({"google": {"client_id": "c", "client_secret": "s"}}))
+        self.assertFalse(google_api.is_ready(
+            {"google": {"client_id": "PUT-YOUR-CLIENT-ID-HERE", "client_secret": "s",
+                        "refresh_token": "r"}}))
+        self.assertTrue(google_api.is_ready(
+            {"google": {"client_id": "c", "client_secret": "s", "refresh_token": "r"}}))
+
+    def test_access_token_uses_the_refresh_grant(self):
+        seen = {}
+
+        def router(url, method, data):
+            seen["url"] = url
+            seen["fields"] = dict(urllib.parse.parse_qsl(data.decode()))
+            return {"access_token": "at-123", "expires_in": 3600}
+
+        self.stub(router)
+        token = google_api.access_token(
+            {"google": {"client_id": "c", "client_secret": "s", "refresh_token": "r"}})
+        self.assertEqual(token, "at-123")
+        self.assertEqual(seen["url"], google_api.TOKEN_URL)
+        self.assertEqual(seen["fields"]["grant_type"], "refresh_token")
+        self.assertEqual(seen["fields"]["refresh_token"], "r")
+
+    def test_consent_url_asks_for_offline_readonly_access(self):
+        url = google_api.consent_url("cid", "http://127.0.0.1:4711/", "state123")
+        params = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+        self.assertEqual(params["access_type"], "offline")
+        self.assertEqual(params["response_type"], "code")
+        self.assertEqual(params["state"], "state123")
+        self.assertIn("gmail.readonly", params["scope"])
+        self.assertIn("calendar.readonly", params["scope"])
+
+    def test_exchange_code_requires_a_refresh_token(self):
+        self.stub(lambda u, m, d: {"access_token": "at"})   # no refresh_token
+        with self.assertRaises(google_api.GoogleError):
+            google_api.exchange_code("c", "s", "code", "http://127.0.0.1:4711/")
+
+    def test_recent_email_parses_senders_and_subjects(self):
+        def router(url, method, data):
+            if "messages/" in url:
+                return {"snippet": "the body preview", "labelIds": ["UNREAD", "INBOX"],
+                        "payload": {"headers": [
+                            {"name": "From", "value": "Dani Marlowe <dani@meridian.coffee>"},
+                            {"name": "Subject", "value": "Roaster quote"}]}}
+            return {"messages": [{"id": "m1"}]}
+
+        self.stub(router)
+        emails = google_api.recent_email("at")
+        self.assertEqual(len(emails), 1)
+        self.assertEqual(emails[0]["from"], "Dani Marlowe")     # name, not the address
+        self.assertEqual(emails[0]["subject"], "Roaster quote")
+        self.assertTrue(emails[0]["unread"])
+
+    def test_recent_email_handles_a_bare_address(self):
+        def router(url, method, data):
+            if "messages/" in url:
+                return {"snippet": "", "labelIds": [],
+                        "payload": {"headers": [{"name": "From", "value": "ops@hotel.com"}]}}
+            return {"messages": [{"id": "m1"}]}
+        self.stub(router)
+        emails = google_api.recent_email("at")
+        self.assertEqual(emails[0]["from"], "ops@hotel.com")
+        self.assertEqual(emails[0]["subject"], "(no subject)")
+
+    def test_todays_events_formats_times_and_all_day(self):
+        def router(url, method, data):
+            return {"items": [
+                {"summary": "Standup", "location": "Roastery",
+                 "start": {"dateTime": "2026-09-01T09:15:00+00:00"}},
+                {"summary": "Delivery window", "start": {"date": "2026-09-01"}}]}
+        self.stub(router)
+        events = google_api.todays_events("at")
+        self.assertEqual(len(events), 2)
+        self.assertFalse(events[0]["all_day"])
+        self.assertEqual(events[0]["summary"], "Standup")
+        self.assertTrue(events[1]["all_day"])
+        self.assertEqual(events[1]["when"], "all day")
+
+    def test_a_403_tells_the_user_to_re_run_setup(self):
+        def fake(request, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            raise urllib.error.HTTPError(url, 403, "forbidden", {}, io.BytesIO(b"{}"))
+        urllib.request.urlopen = fake
+        with self.assertRaises(google_api.GoogleError) as caught:
+            google_api.recent_email("at")
+        self.assertIn("setup_google", str(caught.exception))
+
+
+class TestBriefTrigger(unittest.TestCase):
+
+    def test_greetings_and_commands_trigger(self):
+        for q in ["good morning", "good morning Jarvis", "good morning, sir", "brief me",
+                  "morning briefing", "what's on today", "what needs me", "any important emails",
+                  "any unread messages", "what do I have this morning", "what's on my calendar",
+                  "catch me up on my inbox"]:
+            self.assertTrue(server.is_brief_query(q), q)
+
+    def test_a_greeting_inside_a_sentence_is_not_a_brief(self):
+        for q in ["good morning is a nice greeting for the newsletter",
+                  "what is our pricing strategy", "research coffee prices",
+                  "what was I doing yesterday", "remember that email marketing works",
+                  "what is the email newsletter strategy", "how do I email a wholesale account"]:
+            self.assertFalse(server.is_brief_query(q), q)
 
 
 class TestElevenLabsVoice(unittest.TestCase):
@@ -910,6 +1040,87 @@ class TestAsk(StubbedJarvis):
         self.assertRegex(greeting, r"Good (morning|afternoon|evening)")
 
 
+class TestMorningBrief(unittest.TestCase):
+    """The brief end to end, with google_api and the model both stubbed."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="jarvis-brief-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        seed_notes.seed(os.path.join(self.dir, "notes"))
+
+        self._saved = (google_api.access_token, google_api.recent_email,
+                       google_api.todays_events, server.call_anthropic)
+        google_api.access_token = lambda cfg: "at"
+        google_api.recent_email = lambda tok, query=None, max_results=8, timeout=30: [
+            {"from": "Dani", "subject": "Roaster quote", "snippet": "46k", "unread": True},
+            {"from": "Two Rivers", "subject": "Contract", "snippet": "see attached", "unread": True},
+        ]
+        google_api.todays_events = lambda tok, calendar_id="primary", now=None, timeout=30: [
+            {"when": "9:15 AM", "summary": "Standup", "all_day": False, "location": "Roastery"},
+        ]
+        self.sent = []
+
+        def fake(config, system, messages, timeout=60, model=None):
+            self.sent.append({"system": system, "messages": messages})
+            return "Good morning, sir. Standup at 9:15; Dani's quote is in."
+
+        server.call_anthropic = fake
+
+        def restore():
+            (google_api.access_token, google_api.recent_email,
+             google_api.todays_events, server.call_anthropic) = self._saved
+        self.addCleanup(restore)
+
+        self.jarvis = server.Jarvis(
+            os.path.join(self.dir, "notes"),
+            {"api_key": "sk-ant-x", "backend": "api",
+             "google": {"client_id": "c", "client_secret": "s", "refresh_token": "r"}},
+            graph_js=os.path.join(self.dir, "g.js"),
+            activity_log=os.path.join(self.dir, "a.log"))
+
+    def test_brief_returns_answer_and_structured_data(self):
+        result = self.jarvis.ask("good morning", "s1")
+        self.assertEqual(result["mode"], "brief")
+        self.assertEqual(result["nodes"], [], "the brief must not move the galaxy")
+        self.assertEqual(len(result["brief"]["emails"]), 2)
+        self.assertEqual(len(result["brief"]["events"]), 1)
+
+    def test_the_model_is_briefed_from_real_inbox_data(self):
+        self.jarvis.ask("what needs me", "s1")
+        prompt = self.sent[-1]["messages"][-1]["content"]
+        self.assertIn("Roaster quote", prompt)
+        self.assertIn("Standup", prompt)
+        self.assertIn("morning brief", self.sent[-1]["system"].lower())
+
+    def test_brief_is_logged_for_the_time_machine(self):
+        self.jarvis.ask("good morning", "s1")
+        kinds = [e["kind"] for e in self.jarvis.read_activity()]
+        self.assertIn("brief", kinds)
+
+    def test_a_google_failure_is_surfaced_in_character(self):
+        def boom(cfg):
+            raise google_api.GoogleError("Google refused the request (403). Re-run setup_google.py.")
+        google_api.access_token = boom
+        result = self.jarvis.ask("good morning", "s1")
+        self.assertTrue(result.get("error"))
+        self.assertIn("setup_google", result["answer"])
+        self.assertEqual(result["nodes"], [])
+
+    def test_format_brief_is_readable_and_complete(self):
+        text = server.format_brief(
+            [{"from": "Dani", "subject": "Quote", "snippet": "46k", "unread": True}],
+            [{"when": "9:15 AM", "summary": "Standup", "all_day": False, "location": "Roastery"}],
+            datetime(2026, 9, 1, 7, 30))
+        self.assertIn("Standup", text)
+        self.assertIn("Dani", text)
+        self.assertIn("1 unread", text)
+
+    def test_format_brief_handles_an_empty_day(self):
+        text = server.format_brief([], [], datetime(2026, 9, 1, 7, 30))
+        self.assertIn("nothing scheduled", text)
+        self.assertIn("nothing new", text)
+
+
 class TestTimeMachineActivity(unittest.TestCase):
     """The activity log itself, and the offline (no-LLM) Time Machine answers."""
 
@@ -948,6 +1159,13 @@ class TestTimeMachineActivity(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["kind"], "remember")
         self.assertEqual(entries[0]["nodes"], [result["node"]["id"]])
+
+    def test_brief_without_google_says_to_run_setup(self):
+        # This offline jarvis has no google block.
+        result = self.jarvis.ask("good morning", "s1")
+        self.assertEqual(result["mode"], "idle")
+        self.assertEqual(result["nodes"], [])
+        self.assertIn("setup_google", result["answer"])
 
     def test_vision_offline_admits_it_cannot_see(self):
         result = self.jarvis.look("what am I looking at?",
@@ -1162,6 +1380,8 @@ class TestHttp(TempVault):
 
     def test_status_advertises_models_and_dials(self):
         payload = json.loads(self.get("/api/status")[1])
+        self.assertIn("brief", payload)
+        self.assertFalse(payload["brief"], "offline/no-google server must not offer a brief")
         # This instance is offline, so it must not offer a model picker.
         self.assertEqual(payload["models"], [])
         self.assertIsNone(payload["defaultModel"])
@@ -1184,6 +1404,13 @@ class TestHttp(TempVault):
             status, payload = self.post("/chat", body)
             self.assertEqual(status, 200, body)
             self.assertTrue(payload["answer"], body)
+
+    def test_brief_route_without_google_answers_politely(self):
+        status, body = self.get("/brief")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["answer"])          # "run setup_google.py", not a crash
+        self.assertEqual(payload["nodes"], [])
 
     def test_time_machine_round_trip_over_http(self):
         self.post("/chat", {"question": "what is the wholesale margin", "session": "tm-http"})

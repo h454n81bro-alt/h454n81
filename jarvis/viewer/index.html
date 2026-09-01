@@ -215,6 +215,21 @@
   }
   #answer .weblinks a::before { content: "↗ "; opacity: .55; }
   #answer .weblinks a:hover { color: #fff; border-color: var(--accent); }
+  #answer .brief { margin-top: 12px; display: grid; gap: 10px; }
+  #answer .brief .col h4 {
+    margin: 0 0 5px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600;
+  }
+  #answer .brief .item {
+    display: flex; gap: 8px; padding: 4px 0; font-size: 12.5px; color: #c9d6ee;
+    border-top: 1px solid rgba(150,190,255,.08);
+  }
+  #answer .brief .item:first-of-type { border-top: 0; }
+  #answer .brief .when { color: var(--accent); flex: none; min-width: 62px; font-variant-numeric: tabular-nums; }
+  #answer .brief .who { color: #fff; flex: none; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #answer .brief .what { color: #9db0cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #answer .brief .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 5px; flex: none; background: #ff6b8b; }
+  #answer .brief .item.read .dot { background: transparent; border: 1px solid rgba(150,190,255,.3); }
   #answer .cited {
     display: block; margin-top: 10px; font-size: 11px; color: var(--dim);
     letter-spacing: .04em;
@@ -1188,8 +1203,47 @@ function domainOf(url) {
   }
 }
 
-function showAnswer(text, sources, citations) {
+function renderBrief(brief) {
+  const wrap = document.createElement("div");
+  wrap.className = "brief";
+  const events = (brief.events || []), emails = (brief.emails || []);
+
+  if (events.length) {
+    const col = document.createElement("div");
+    col.className = "col";
+    col.innerHTML = "<h4>Today</h4>";
+    events.slice(0, 6).forEach(function (e) {
+      const row = document.createElement("div");
+      row.className = "item";
+      row.innerHTML = '<span class="when"></span><span class="what"></span>';
+      row.querySelector(".when").textContent = e.when;
+      row.querySelector(".what").textContent = e.summary + (e.location ? " · " + e.location : "");
+      col.appendChild(row);
+    });
+    wrap.appendChild(col);
+  }
+  if (emails.length) {
+    const col = document.createElement("div");
+    col.className = "col";
+    col.innerHTML = "<h4>Inbox</h4>";
+    emails.slice(0, 6).forEach(function (e) {
+      const row = document.createElement("div");
+      row.className = "item" + (e.unread ? "" : " read");
+      row.innerHTML = '<span class="dot"></span><span class="who"></span><span class="what"></span>';
+      row.querySelector(".who").textContent = e.from;
+      row.querySelector(".what").textContent = e.subject;
+      col.appendChild(row);
+    });
+    wrap.appendChild(col);
+  }
+  return wrap;
+}
+
+function showAnswer(text, sources, citations, brief) {
   el.answer.textContent = text;
+  if (brief && ((brief.events && brief.events.length) || (brief.emails && brief.emails.length))) {
+    el.answer.appendChild(renderBrief(brief));
+  }
   if (sources && sources.length) {
     const cite = document.createElement("span");
     cite.className = "cited";
@@ -1258,7 +1312,7 @@ async function ask(text) {
   });
   const answer = result.data;
   setStatus("");
-  showAnswer(answer.answer, answer.sources, answer.citations);
+  showAnswer(answer.answer, answer.sources, answer.citations, answer.brief);
   speak(answer.answer);
 
   // Prompt 4: prove where the answer came from.
@@ -1352,6 +1406,14 @@ fetch("/api/status").then(function (r) { return r.json(); }).then(function (stat
     paintModelNote();
   }
 
+  if (status.brief) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "☀ Brief me";
+    button.onclick = function () { unlockAudio(); submit("good morning"); };
+    el.suggestions.appendChild(button);
+  }
+
   (status.suggestions || []).forEach(function (text) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1399,6 +1461,7 @@ window.JARVIS = {
   wantsScreen: wantsScreen, scaledSize: scaledSize, canCapture: canCapture,
   captureScreen: captureScreen, look: look,
   speak: speak, stopSpeaking: stopSpeaking, tts: function () { return tts; },
+  renderBrief: renderBrief,
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }
