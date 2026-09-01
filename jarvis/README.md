@@ -34,20 +34,41 @@ TARS-style personality dials, and model hot-swap.
   beyond    Computer control "Open Notepad", "play music", "lock the screen" (Windows/Mac/Linux)
 ```
 
-## Quick start
+## Run it
+
+**One command** — builds the galaxy, starts the server, and opens it in Chrome:
 
 ```bash
 cd jarvis
-python3 build.py        # writes viewer/graph-data.js (seeds 25 sample notes if you have none)
-python3 server.py       # http://localhost:4700
+python3 jarvis.py
 ```
 
-Open **http://localhost:4700 in Google Chrome** — the microphone and the voice need
-Chrome or Edge; Safari won't do it. Click once anywhere on the page to let it speak
-(browsers block audio until you interact).
+Or **double-click** a launcher: **`Start JARVIS.bat`** (Windows), **`Start JARVIS.command`**
+(macOS), or `./jarvis.sh` (Linux).
 
-There are no dependencies. Python 3.8+ and a browser, nothing else — no pip installs,
-no npm, no build step.
+The viewer opens in **Chrome or Edge** — the microphone and voice need one; Safari won't
+do it. Click once anywhere on the page to let it speak (browsers block audio until you
+interact).
+
+There are no dependencies. **Python 3.8+ and a browser, nothing else** — no pip installs,
+no npm, no build step. The first run writes `config.json` for you; it works immediately
+with extractive answers, and gets a real brain when you add an Anthropic key (or have the
+`claude` CLI installed).
+
+```bash
+python3 jarvis.py --no-open          # don't open a browser
+python3 jarvis.py --notes ~/vault    # your own markdown vault
+python3 jarvis.py --port 8080        # another port
+python3 jarvis.py setup              # connect Gmail + Calendar (morning brief)
+```
+
+<details><summary>Prefer the pieces separately?</summary>
+
+```bash
+python3 build.py     # writes viewer/graph-data.js (seeds 25 sample notes if you have none)
+python3 server.py    # serves http://localhost:4700 (add --open to launch a browser)
+```
+</details>
 
 ### Using your own notes
 
@@ -363,7 +384,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 182 tests, standard library only
+python3 tests/test_jarvis.py          # 186 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -427,6 +448,10 @@ the project, so your notes are never touched.
 
 ```
 jarvis/
+├── jarvis.py             one command: build + serve + open the browser
+├── Start JARVIS.bat      double-click launcher (Windows)
+├── Start JARVIS.command  double-click launcher (macOS)
+├── jarvis.sh             launcher (Linux)
 ├── build.py              scans .md, writes viewer/graph-data.js
 ├── seed_notes.py         25 sample notes for a small coffee roastery
 ├── server.py             static server + /chat + /remember + /api/status

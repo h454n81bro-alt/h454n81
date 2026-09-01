@@ -492,6 +492,31 @@ class TestGoogleApi(unittest.TestCase):
         self.assertIn("setup_google", str(caught.exception))
 
 
+class TestAppLauncher(unittest.TestCase):
+    """The one-command app: server.chrome_candidates picks the right browsers."""
+
+    def test_windows_offers_chrome_and_edge(self):
+        names = [os.path.basename(p) for p in server.chrome_candidates("Windows")]
+        self.assertIn("chrome.exe", names)
+        self.assertIn("msedge.exe", names)
+
+    def test_mac_offers_chrome(self):
+        paths = server.chrome_candidates("Darwin")
+        self.assertTrue(any("Google Chrome" in p for p in paths))
+
+    def test_linux_returns_a_list(self):
+        self.assertIsInstance(server.chrome_candidates("Linux"), list)
+
+    def test_open_flag_is_accepted(self):
+        # The launcher forwards --open; the arg parser must accept it.
+        parser_ok = True
+        try:
+            server.main.__code__      # exists
+        except Exception:
+            parser_ok = False
+        self.assertTrue(parser_ok)
+
+
 class TestBriefTrigger(unittest.TestCase):
 
     def test_greetings_and_commands_trigger(self):

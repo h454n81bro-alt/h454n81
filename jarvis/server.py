@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1840,6 +1841,68 @@ class JarvisHandler(BaseHTTPRequestHandler):
         sys.stderr.write("  %s  %s\n" % (self.log_date_time_string(), fmt % args))
 
 
+def chrome_candidates(system=None):
+    """Likely Chrome/Edge paths for the platform — the browsers the mic/voice need."""
+    system = system or ("Windows" if os.name == "nt" else
+                        ("Darwin" if sys.platform == "darwin" else "Linux"))
+    if system == "Windows":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        return [
+            os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+        ]
+    if system == "Darwin":
+        return [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    found = []
+    for name in ("google-chrome", "google-chrome-stable", "chromium",
+                 "chromium-browser", "microsoft-edge"):
+        path = shutil.which(name)
+        if path:
+            found.append(path)
+    return found
+
+
+def launch_browser(url):
+    """Open the viewer, preferring Chrome or Edge — the mic and voice need one.
+
+    Falls back to the default browser (with a note) rather than failing.
+    """
+    import webbrowser
+    for path in chrome_candidates():
+        if os.path.exists(path) or shutil.which(path):
+            try:
+                webbrowser.register("jarvis-chrome", None,
+                                    webbrowser.BackgroundBrowser(path))
+                webbrowser.get("jarvis-chrome").open(url)
+                return True
+            except Exception:
+                continue
+    try:
+        webbrowser.open(url)              # default browser — may not be Chrome
+        return False
+    except Exception:
+        return False
+
+
+def _open_when_ready(url, port, host="127.0.0.1"):
+    """Wait for the server to answer, then open the browser. Runs in a thread."""
+    import urllib.request
+    probe = "http://%s:%d/api/status" % (host if host != "0.0.0.0" else "127.0.0.1", port)
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(probe, timeout=1):
+                break
+        except Exception:
+            time.sleep(0.25)
+    launch_browser(url)
+
+
 def make_server(jarvis, port=4700, host="127.0.0.1"):
     handler = type("BoundJarvisHandler", (JarvisHandler,), {"jarvis": jarvis})
     return ThreadingHTTPServer((host, port), handler)
@@ -1852,6 +1915,8 @@ def main(argv=None):
     parser.add_argument("--notes", default=None, help="notes folder (default: from build)")
     parser.add_argument("--backend", choices=["auto", "api", "cli", "offline"], default=None,
                         help="override the brain: anthropic api, claude cli, or offline")
+    parser.add_argument("--open", action="store_true",
+                        help="open the viewer in a browser once the server is up")
     args = parser.parse_args(argv)
 
     # Give the user a real file to paste their key into, rather than asking for it.
@@ -1890,7 +1955,13 @@ def main(argv=None):
         print("  Voice: ElevenLabs (%d voice(s) available)" % len(jarvis.voices))
     elif jarvis.config.get("elevenlabs", {}).get("api_key"):
         print("  Voice: ElevenLabs key set, but no voice could be loaded — using the browser voice")
-    print("\n  Open  http://localhost:%d  in Google Chrome.\n" % args.port)
+    url = "http://localhost:%d" % args.port
+    if args.open:
+        print("\n  Opening %s …  (Chrome or Edge for the mic and voice)\n" % url)
+        threading.Thread(target=_open_when_ready, args=(url, args.port, args.host),
+                         daemon=True).start()
+    else:
+        print("\n  Open  %s  in Google Chrome.\n" % url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
