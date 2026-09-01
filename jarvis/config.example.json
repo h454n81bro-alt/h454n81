@@ -1,0 +1,19 @@
+{
+  "api_key": "PUT-YOUR-KEY-HERE",
+  "model": "claude-opus-5",
+  "backend": "auto",
+  "elevenlabs": {
+    "api_key": "",
+    "voice_id": "",
+    "model_id": "eleven_turbo_v2_5"
+  },
+  "google": {
+    "client_id": "PUT-YOUR-CLIENT-ID-HERE",
+    "client_secret": "PUT-YOUR-CLIENT-SECRET-HERE",
+    "refresh_token": ""
+  },
+  "computer": {
+    "enabled": false,
+    "confirm": true
+  }
+}
