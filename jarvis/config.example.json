@@ -11,5 +11,9 @@
     "client_id": "PUT-YOUR-CLIENT-ID-HERE",
     "client_secret": "PUT-YOUR-CLIENT-SECRET-HERE",
     "refresh_token": ""
+  },
+  "computer": {
+    "enabled": false,
+    "confirm": true
   }
 }

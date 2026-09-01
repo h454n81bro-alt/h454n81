@@ -21,6 +21,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import build
+import computer
 import google_api
 import seed_notes
 import server
@@ -506,6 +507,129 @@ class TestBriefTrigger(unittest.TestCase):
                   "what was I doing yesterday", "remember that email marketing works",
                   "what is the email newsletter strategy", "how do I email a wholesale account"]:
             self.assertFalse(server.is_brief_query(q), q)
+
+
+class TestComputerControl(unittest.TestCase):
+    """Voice control of the machine — parsing, allowlist, and injection safety.
+    Command building is checked with the platform forced, since this runs on Linux."""
+
+    def test_intents_parse(self):
+        cases = {
+            "open notepad": ("open_app", "notepad"),
+            "launch calculator": ("open_app", "calculator"),
+            "open chrome": ("open_app", "browser"),
+            "open task manager": ("open_app", "task manager"),
+            "go to youtube.com": ("open_url", "youtube.com"),
+            "open https://github.com": ("open_url", "https://github.com"),
+            "play music": ("play_pause", None),
+            "pause": ("play_pause", None),
+            "next track": ("next", None),
+            "skip": ("next", None),
+            "previous track": ("previous", None),
+            "volume up": ("volume_up", None),
+            "turn it down": ("volume_down", None),
+            "mute": ("mute", None),
+            "lock the screen": ("lock", None),
+            "lock my computer": ("lock", None),
+        }
+        for text, expected in cases.items():
+            self.assertEqual(computer.parse_command(text), expected, text)
+
+    def test_non_commands_are_not_commands(self):
+        for text in ["what is our pricing strategy", "good morning",
+                     "draft a reply to Dani", "remember that I opened a shop",
+                     "research coffee prices", "what was I doing yesterday"]:
+            self.assertIsNone(computer.parse_command(text), text)
+
+    def test_an_unknown_app_is_flagged_not_run(self):
+        self.assertEqual(computer.parse_command("open frobnicator")[0], "open_unknown")
+        self.assertFalse(computer.is_command("open frobnicator"))
+
+    def test_windows_builders_produce_safe_argv(self):
+        argv, _ = computer.build_command("open_app", "notepad", system="Windows")
+        self.assertEqual(argv, ["cmd", "/c", "start", "", "notepad"])
+        argv, _ = computer.build_command("lock", None, system="Windows")
+        self.assertIn("LockWorkStation", argv[-1])
+        argv, _ = computer.build_command("play_pause", None, system="Windows")
+        self.assertEqual(argv[0], "powershell")
+        self.assertIn("179", argv[-1])                 # VK_MEDIA_PLAY_PAUSE
+        # every arg is a discrete list item — nothing is a shell string
+        for item in argv:
+            self.assertIsInstance(item, str)
+
+    def test_urls_are_validated_against_injection(self):
+        self.assertEqual(computer.normalise_url("youtube.com"), "https://youtube.com")
+        self.assertEqual(computer.normalise_url("https://a.com/x?q=1"), "https://a.com/x?q=1")
+        for bad in ["youtube.com; rm -rf /", 'http://x\" & calc', "notepad & shutdown",
+                    "file:///etc/passwd", "javascript:alert(1)", "not a url"]:
+            self.assertIsNone(computer.normalise_url(bad), bad)
+
+    def test_building_an_unknown_url_refuses(self):
+        with self.assertRaises(computer.ComputerError):
+            computer.build_command("open_url", "; rm -rf /", system="Windows")
+
+
+class TestComputerGate(unittest.TestCase):
+    """The server-side enable flag and the "do it" gate for actions."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="jarvis-cc-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        seed_notes.seed(os.path.join(self.dir, "notes"))
+        self.ran = []
+        self._run = computer.run
+        computer.run = lambda argv, timeout=15: self.ran.append(argv) or True
+        self.addCleanup(setattr, computer, "run", self._run)
+
+    def jarvis(self, computer_cfg=None):
+        cfg = {"api_key": "x", "backend": "offline"}
+        if computer_cfg is not None:
+            cfg["computer"] = computer_cfg
+        return server.Jarvis(os.path.join(self.dir, "notes"), cfg,
+                             graph_js=os.path.join(self.dir, "g.js"),
+                             activity_log=os.path.join(self.dir, "a.log"))
+
+    def test_disabled_by_default_nothing_runs(self):
+        j = self.jarvis()                       # no computer block
+        result = j.ask("open notepad", "s1")
+        self.assertNotEqual(result.get("mode"), "action")
+        self.assertEqual(self.ran, [])
+
+    def test_enabled_gates_then_runs_on_do_it(self):
+        j = self.jarvis({"enabled": True})
+        step1 = j.ask("open notepad", "s1")
+        self.assertEqual(step1["mode"], "action")
+        self.assertEqual(self.ran, [], "nothing may run before the gate")
+        step2 = j.ask("do it", "s1")
+        self.assertEqual(step2["mode"], "action_done")
+        self.assertEqual(len(self.ran), 1)
+
+    def test_cancel_runs_nothing(self):
+        j = self.jarvis({"enabled": True})
+        j.ask("lock the screen", "s1")
+        result = j.ask("no", "s1")
+        self.assertEqual(result["mode"], "action_cancelled")
+        self.assertEqual(self.ran, [])
+
+    def test_immediate_mode_runs_at_once(self):
+        j = self.jarvis({"enabled": True, "confirm": False})
+        result = j.ask("open notepad", "s1")
+        self.assertEqual(result["mode"], "action_done")
+        self.assertEqual(len(self.ran), 1)
+
+    def test_pending_action_is_per_session(self):
+        j = self.jarvis({"enabled": True})
+        j.ask("open calculator", "alice")
+        j.ask("do it", "bob")                   # bob has nothing pending
+        self.assertEqual(self.ran, [])
+        j.ask("do it", "alice")
+        self.assertEqual(len(self.ran), 1)
+
+    def test_unknown_app_is_reported_not_run(self):
+        j = self.jarvis({"enabled": True})
+        result = j.ask("open frobnicator", "s1")
+        self.assertEqual(self.ran, [])
+        self.assertIn("recognise", result["answer"].lower())
 
 
 class TestDraftTriggers(unittest.TestCase):
@@ -1565,6 +1689,7 @@ class TestHttp(TempVault):
         payload = json.loads(self.get("/api/status")[1])
         self.assertIn("brief", payload)
         self.assertFalse(payload["brief"], "offline/no-google server must not offer a brief")
+        self.assertFalse(payload["computer"], "control is off unless config enables it")
         # This instance is offline, so it must not offer a model picker.
         self.assertEqual(payload["models"], [])
         self.assertIsNone(payload["defaultModel"])

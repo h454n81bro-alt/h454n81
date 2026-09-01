@@ -253,6 +253,12 @@
   #answer .draft .nope { background: rgba(255,255,255,.05); border: 1px solid var(--line); color: #9db0cf; }
   #answer .draft .nope:hover { color: #fff; }
   #answer .draft .saved { color: #7dffb3; font-size: 12px; padding: 8px 11px; }
+  #answer .action { margin-top: 12px; }
+  #answer .action .cmd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    color: #8fa6c8; padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px;
+    overflow-x: auto; white-space: nowrap;
+  }
   #answer .cited {
     display: block; margin-top: 10px; font-size: 11px; color: var(--dim);
     letter-spacing: .04em;
@@ -1226,6 +1232,36 @@ function domainOf(url) {
   }
 }
 
+function renderAction(action) {
+  const wrap = document.createElement("div");
+  wrap.className = "draft action";      // reuse the draft card chrome
+  const cmd = document.createElement("div");
+  cmd.className = "cmd";
+  cmd.textContent = action.command;
+  wrap.appendChild(cmd);
+  const act = document.createElement("div");
+  act.className = "act";
+  const doit = document.createElement("button");
+  doit.className = "doit"; doit.textContent = "✓ Do it";
+  const nope = document.createElement("button");
+  nope.className = "nope"; nope.textContent = "Cancel";
+  const settle = function (word) {
+    return function () {
+      act.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "saved";
+      note.textContent = word === "do it" ? "Running…" : "Stood down.";
+      wrap.appendChild(note);
+      submit(word);
+    };
+  };
+  doit.onclick = settle("do it");
+  nope.onclick = settle("cancel");
+  act.appendChild(doit); act.appendChild(nope);
+  wrap.appendChild(act);
+  return wrap;
+}
+
 function renderDraft(draft) {
   const wrap = document.createElement("div");
   wrap.className = "draft";
@@ -1375,6 +1411,7 @@ async function ask(text) {
   setStatus("");
   showAnswer(answer.answer, answer.sources, answer.citations, answer.brief);
   if (answer.draft) el.answer.appendChild(renderDraft(answer.draft));
+  if (answer.action) el.answer.appendChild(renderAction(answer.action));
   speak(answer.answer);
 
   // Prompt 4: prove where the answer came from.
@@ -1523,7 +1560,7 @@ window.JARVIS = {
   wantsScreen: wantsScreen, scaledSize: scaledSize, canCapture: canCapture,
   captureScreen: captureScreen, look: look,
   speak: speak, stopSpeaking: stopSpeaking, tts: function () { return tts; },
-  renderBrief: renderBrief, renderDraft: renderDraft,
+  renderBrief: renderBrief, renderDraft: renderDraft, renderAction: renderAction,
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }

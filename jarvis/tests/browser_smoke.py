@@ -267,6 +267,39 @@ def main():
             check.that("Escape does not throw or break the page",
                        page.evaluate("window.JARVIS.speaking()") is False)
 
+            # -- computer control: the action card and its gate --------------
+            page.evaluate("""() => {
+              const card = window.JARVIS.renderAction(
+                {phrase:'open notepad', command:'cmd /c start  notepad'});
+              const a = document.getElementById('answer');
+              a.textContent = 'Shall I open notepad, sir? Say "do it".';
+              a.appendChild(card); a.classList.add('show');
+            }""")
+            check.that("the action card shows the exact command", page.evaluate(
+                "!!document.querySelector('#answer .action .cmd')"))
+            check.that("Do-it and Cancel are offered",
+                       page.locator("#answer .action .doit").count() == 1
+                       and page.locator("#answer .action .nope").count() == 1)
+            action_word = page.evaluate("""async () => {
+              let captured = null;
+              const orig = window.fetch;
+              window.fetch = (url, opts) => {
+                if (typeof url==='string' && url.indexOf('/chat')>=0) {
+                  try { captured = JSON.parse(opts.body).question; } catch(e){}
+                  return Promise.resolve(new Response(JSON.stringify(
+                    {answer:'Done, sir.', nodes:[], sources:[], mode:'action_done'}),
+                    {status:200, headers:{'Content-Type':'application/json'}}));
+                }
+                return orig(url, opts);
+              };
+              document.querySelector('#answer .action .doit').click();
+              await new Promise(r=>setTimeout(r,400));
+              window.fetch = orig;
+              return captured;
+            }""")
+            check.that("Do-it on an action submits the confirmation", action_word == "do it",
+                       "sent %r" % action_word)
+
             # -- agent hands: the draft card and its do-it gate ---------------
             page.evaluate("""() => {
               const card = window.JARVIS.renderDraft(

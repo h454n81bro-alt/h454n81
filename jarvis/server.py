@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import build
+import computer
 import google_api
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -939,6 +940,7 @@ class Jarvis(object):
         self.lock = threading.Lock()
         self.sessions = {}
         self.pending_drafts = {}          # session_id -> {to, subject, body} awaiting "do it"
+        self.pending_actions = {}         # session_id -> {action, arg, argv, phrase} awaiting "do it"
         self.graph = build.build_graph(self.notes_dir)
 
         # Cloned-voice TTS is optional. Probe once so the browser knows which voice
@@ -963,6 +965,14 @@ class Jarvis(object):
     # -- state ------------------------------------------------------------
     def compose_allowed(self):
         return self.google_ready and bool((self.config.get("google") or {}).get("compose"))
+
+    def computer_enabled(self):
+        return bool((self.config.get("computer") or {}).get("enabled"))
+
+    def computer_confirm(self):
+        # Default: gate every action behind "do it". Opt into immediate with confirm=false.
+        cfg = self.config.get("computer") or {}
+        return cfg.get("confirm", True)
 
     @property
     def note_count(self):
@@ -1053,16 +1063,30 @@ class Jarvis(object):
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
 
-        # A waiting draft turns the next "do it" / "no" into a decision, not a query.
+        # A waiting draft or action turns the next "do it" / "no" into a decision.
         with self.lock:
-            has_pending = session_id in self.pending_drafts
-        if has_pending and is_confirmation(question):
-            return self._commit_draft(session_id)
-        if has_pending and is_cancellation(question):
-            with self.lock:
-                self.pending_drafts.pop(session_id, None)
-            return {"answer": "Discarded, sir. Nothing was saved.", "nodes": [], "sources": [],
-                    "backend": self.backend, "mode": "draft_cancelled", "model": None}
+            has_draft = session_id in self.pending_drafts
+            has_action = session_id in self.pending_actions
+        if is_confirmation(question):
+            if has_draft:
+                return self._commit_draft(session_id)
+            if has_action:
+                return self._run_pending_action(session_id)
+        if is_cancellation(question):
+            if has_draft:
+                with self.lock:
+                    self.pending_drafts.pop(session_id, None)
+                return {"answer": "Discarded, sir. Nothing was saved.", "nodes": [],
+                        "sources": [], "backend": self.backend, "mode": "draft_cancelled",
+                        "model": None}
+            if has_action:
+                with self.lock:
+                    self.pending_actions.pop(session_id, None)
+                return {"answer": "Stood down, sir.", "nodes": [], "sources": [],
+                        "backend": self.backend, "mode": "action_cancelled", "model": None}
+
+        if self.computer_enabled() and computer.parse_command(question):
+            return self._computer_answer(question, session_id)
 
         if is_draft_query(question):
             return self._draft_answer(question, session_id, dials, model)
@@ -1185,6 +1209,52 @@ class Jarvis(object):
             "backend": self.backend, "mode": "vision",
             "model": model if self.backend != "offline" else None,
         }
+
+    # -- computer control (Windows / Mac / Linux) ---------------------------
+    def _computer_answer(self, question, session_id):
+        action, arg = computer.parse_command(question)
+        if action == "open_unknown":
+            return {"answer": "I don't recognise “%s”, sir — I can open apps you name or a "
+                              "web address." % arg, "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "idle", "model": None}
+        try:
+            argv, phrase = computer.build_command(action, arg)
+        except computer.ComputerError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+
+        # Immediate mode (opted in) runs at once; otherwise hold behind "do it".
+        if not self.computer_confirm():
+            return self._execute_action(session_id, action, arg, argv, phrase)
+
+        with self.lock:
+            self.pending_actions[session_id] = {"action": action, "arg": arg,
+                                                "argv": argv, "phrase": phrase}
+        return {
+            "answer": "Shall I %s, sir? Say “do it”." % phrase,
+            "nodes": [], "sources": [], "backend": self.backend, "mode": "action",
+            "action": {"phrase": phrase, "command": " ".join(argv)},
+            "model": None,
+        }
+
+    def _run_pending_action(self, session_id):
+        with self.lock:
+            pending = self.pending_actions.pop(session_id, None)
+        if not pending:
+            return {"answer": "Nothing was waiting, sir.", "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "idle", "model": None}
+        return self._execute_action(session_id, pending["action"], pending["arg"],
+                                    pending["argv"], pending["phrase"])
+
+    def _execute_action(self, session_id, action, arg, argv, phrase):
+        try:
+            computer.run(argv)
+        except computer.ComputerError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+        self.log_activity("computer", session_id, phrase, [])
+        return {"answer": "Done, sir — %s." % phrase, "nodes": [], "sources": [],
+                "backend": self.backend, "mode": "action_done", "model": None}
 
     # -- agent hands: draft an email (never sends) --------------------------
     def _resolve_recipient(self, question):
@@ -1697,6 +1767,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "tts": j.tts_status(),
                 "brief": j.google_ready and j.backend != "offline",
                 "compose": j.compose_allowed() and j.backend != "offline",
+                "computer": j.computer_enabled(),
             })
 
         target = self.resolve_static(route)
@@ -1812,6 +1883,9 @@ def main(argv=None):
     if jarvis.google_ready:
         print("  Brief: Gmail + Calendar connected%s"
               % (" (+ agent hands: drafts)" if jarvis.compose_allowed() else ""))
+    if jarvis.computer_enabled():
+        print("  Computer: control enabled (%s)%s"
+              % (computer.SYSTEM, "" if jarvis.computer_confirm() else " — immediate, no gate"))
     if jarvis.tts_available and jarvis.default_voice:
         print("  Voice: ElevenLabs (%d voice(s) available)" % len(jarvis.voices))
     elif jarvis.config.get("elevenlabs", {}).get("api_key"):

@@ -31,6 +31,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Cloned voice     ElevenLabs — the reactor pulses to his real waveform
   beyond    Morning brief    "Good morning" — real Gmail + Calendar, inbox triage
   beyond    Agent hands      "Draft a reply to…" — composed, then a "do it" gate
+  beyond    Computer control "Open Notepad", "play music", "lock the screen" (Windows/Mac/Linux)
 ```
 
 ## Quick start
@@ -83,6 +84,30 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## Talking to your computer (Windows, Mac, Linux)
+
+Say **"open Notepad"**, **"play music"**, **"volume up"**, **"go to youtube.com"**, or
+**"lock the screen"** and he does it on the machine the server runs on. Built for
+Windows first (PowerShell / `cmd`), it also works on macOS (`open`, AppleScript) and
+Linux (`xdg-open`).
+
+Because this runs commands on your computer it is the most guarded feature here:
+
+- **Off by default.** Set `"computer": {"enabled": true}` in `config.json` to turn it on.
+- **A "do it" gate.** Each command is shown first and only runs when you say "do it" (or
+  press the button); "no" stands it down. Prefer it instant? Set `"confirm": false`.
+- **A fixed allowlist, never a shell.** A spoken phrase maps to a named action on a
+  hard-coded list — open one of a known set of apps, open a validated http(s) URL, media
+  transport, volume, or lock. Everything is built as an argv list and run with the shell
+  disabled, so a phrase can't become an arbitrary command. App names resolve to fixed
+  executables; a URL with a shell metacharacter or a non-http scheme is refused.
+
+> **Windows execution is yours to verify.** I built and tested this on Linux, so the
+> intent parsing, the allowlist, URL-injection rejection, the enable flag, and the
+> two-step gate are all covered by tests — but the actual PowerShell/`cmd` calls I could
+> only build and inspect, not run on Windows. Turn it on, try "open Notepad", and confirm
+> it behaves before relying on it.
 
 ## Agent hands — drafting email, gated
 
@@ -338,7 +363,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 170 tests, standard library only
+python3 tests/test_jarvis.py          # 182 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -394,6 +419,7 @@ the project, so your notes are never touched.
 | "I have no line to your inbox" | Run `python3 setup_google.py` to connect Gmail + Calendar. |
 | "Google refused the request (403)" | The token was revoked or scopes changed — re-run `setup_google.py`. |
 | "I can read your mail but not draft it" | Re-run `setup_google.py` and answer yes to "Enable draft-writing?". |
+| "Open Notepad" does nothing | Computer control is off by default — set `"computer": {"enabled": true}` in `config.json`. |
 | Still hear the browser voice with a key set | Check `config.json`'s `elevenlabs.api_key`, and pick a voice in the ⚙ panel. A refused key falls back silently to the browser voice. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 
@@ -407,6 +433,7 @@ jarvis/
 ├── config.example.json   copied to config.json on first run (Anthropic + ElevenLabs + Google)
 ├── google_api.py         Gmail + Calendar over stdlib (no google client library)
 ├── setup_google.py       one-time OAuth sign-in for the morning brief
+├── computer.py           voice control of the machine (allowlisted, argv-only)
 ├── activity.log          Time Machine's memory — gitignored, created on first use
 ├── notes/                your markdown (sample vault by default)
 ├── viewer/
