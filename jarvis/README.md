@@ -28,6 +28,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Time Machine     "what was I doing last Tuesday?"
   beyond    Web research     "research X" — searched, summarised, sources on a card
   beyond    Screen vision    👁  "Jarvis, what am I looking at?"
+  beyond    Cloned voice     ElevenLabs — the reactor pulses to his real waveform
 ```
 
 ## Quick start
@@ -80,6 +81,44 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## A cloned voice (ElevenLabs)
+
+Out of the box he speaks with the browser's built-in voice. Give him an ElevenLabs key
+and he speaks with a real cloned or studio voice instead — and because the audio now
+runs through the page's own WebAudio graph, the arc reactor pulses to his **actual
+waveform** (a live `AnalyserNode`), not the per-word approximation the browser voice is
+limited to. That is the PDF's "reactor HUD that pulses in rhythm with his voice", made
+literal.
+
+Set it in `config.json` (or the `ELEVENLABS_API_KEY` env var):
+
+```json
+{
+  "api_key": "sk-ant-...",
+  "elevenlabs": { "api_key": "sk-el-...", "voice_id": "", "model_id": "eleven_turbo_v2_5" }
+}
+```
+
+Leave `voice_id` blank and he uses the first voice on your account; the ⚙ panel then
+shows a **Voice** dropdown listing your real ElevenLabs voices (pick a British one for
+the full butler), remembered per browser.
+
+Same security posture as the Anthropic key: the ElevenLabs key is read only by the
+server, the browser fetches audio from a `/speak` endpoint that proxies to ElevenLabs,
+and the key never appears in any served response — there's a test that asserts it is
+absent from the URL, the request body, and every response. If ElevenLabs is unset,
+refused, or rate-limited, `/speak` returns a JSON error and the page falls back to the
+browser voice rather than going silent. Offline mode never calls it at all.
+
+> **Testing note:** I have no ElevenLabs key in my sandbox, so the *service* call is
+> tested with a stubbed HTTP layer (request shape, key-as-header-only, error handling).
+> The *browser* half is proven live: the audio path was driven with a real sine-wave
+> WAV served in place of ElevenLabs, and the reactor core measurably swelled to peak
+> amplitude 0.7 while it played — the pulse-to-voice link is real, not mocked. Building
+> this also flushed out a genuine bug: `speak()` bumped its own cancellation token via
+> `stopSpeaking()` *after* capturing it, so the cloned-voice path cancelled itself before
+> the first note. Fixed, with the playback now covered by a browser test.
 
 ## Screen vision
 
@@ -206,6 +245,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - Ask a few real questions, then **"What was I doing today?"**
 - **"Research the current price of green coffee"** — and watch the source chips appear.
 - Press **👁** and point him at anything on your screen.
+- Add an ElevenLabs key and watch the reactor pulse to his real voice.
 
 ## How it works
 
@@ -240,7 +280,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 125 tests, standard library only
+python3 tests/test_jarvis.py          # 136 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -252,7 +292,9 @@ per-model search tool version, citation extraction including the error-shaped re
 that must not be read as a source, and `pause_turn` continuation), session history,
 `/remember`, screen vision (frame validation of everything the browser sends —
 foreign media types, rubbish base64, empty and oversized frames — and the API request
-shape with the image leading), the HTTP surface, the Anthropic request shape, and the
+shape with the image leading), the ElevenLabs voice proxy (voice loading, the
+key travelling as a header only and never in the URL, body, or any served response,
+and graceful failure), the HTTP surface, the Anthropic request shape, and the
 API-key containment described above.
 
 An optional end-to-end test drives the real page in real Chromium:
@@ -269,7 +311,8 @@ non-matches), barge-in is safe when he is silent, the dials move and persist, a 
 Machine question summarises the day's real activity while an empty day is answered
 honestly, research source chips render as safe external links, the screen-vision trigger is told
 apart from notes questions and a failed capture leaves the UI idle rather than wedged,
-and the console stays free of errors. It runs against a throwaway copy of
+the cloned-voice audio path plays and pulses the reactor to a real waveform, and the
+console stays free of errors. It runs against a throwaway copy of
 the project, so your notes are never touched.
 
 ## Troubleshooting
@@ -287,6 +330,7 @@ the project, so your notes are never touched.
 | "I have no way to reach the outside world" | Research needs the API or the `claude` CLI; offline mode cannot search. |
 | 👁 does nothing / "This browser will not let me see" | Screen capture needs Chrome or Edge over `localhost`/`https`. |
 | "I have no eyes without a brain behind them" | Vision needs the API or the `claude` CLI; offline mode cannot see. |
+| Still hear the browser voice with a key set | Check `config.json`'s `elevenlabs.api_key`, and pick a voice in the ⚙ panel. A refused key falls back silently to the browser voice. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 
 ## Layout
@@ -296,7 +340,7 @@ jarvis/
 ├── build.py              scans .md, writes viewer/graph-data.js
 ├── seed_notes.py         25 sample notes for a small coffee roastery
 ├── server.py             static server + /chat + /remember + /api/status
-├── config.example.json   copied to config.json on first run
+├── config.example.json   copied to config.json on first run (Anthropic + ElevenLabs)
 ├── activity.log          Time Machine's memory — gitignored, created on first use
 ├── notes/                your markdown (sample vault by default)
 ├── viewer/

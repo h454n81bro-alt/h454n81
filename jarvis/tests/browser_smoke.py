@@ -267,6 +267,68 @@ def main():
             check.that("Escape does not throw or break the page",
                        page.evaluate("window.JARVIS.speaking()") is False)
 
+            # -- voice (ElevenLabs when configured; here it is not) ----------
+            check.that("reactor exposes a live-amplitude hook", page.evaluate(
+                "typeof window.JARVIS.reactor.amp === 'function'"))
+            page.evaluate("window.JARVIS.reactor.amp(0.8)")
+            check.that("amplitude drives the reactor core scale", page.evaluate(
+                "getComputedStyle(document.querySelector('#reactor .core'))"
+                ".getPropertyValue('--amp').trim()") == "0.800")
+            page.evaluate("window.JARVIS.reactor.amp(0)")
+            check.that("this offline server offers no cloned voice",
+                       page.evaluate("window.JARVIS.tts().available") is False)
+            check.that("the voice picker stays hidden without ElevenLabs",
+                       page.eval_on_selector("#voiceRow", "el => el.hidden") is True)
+            check.that("speak() is safe to call with no audio unlocked", page.evaluate(
+                "(function(){ window.JARVIS.speak('test'); return true; })()"))
+            check.that("stopSpeaking is safe when nothing is playing",
+                       page.evaluate("window.JARVIS.stopSpeaking()") is False)
+
+            # Prove the cloned-voice audio path actually plays and drives the reactor
+            # amplitude — without an ElevenLabs key, by turning on tts and serving a
+            # real sine-wave WAV from a patched fetch. Headless Chromium plays audio
+            # to a null sink but still decodes samples, so the analyser sees real
+            # amplitude.
+            played = page.evaluate("""async () => {
+              const sr = 44100, secs = 1.2, n = sr * secs;
+              const bytes = 44 + n * 2, buf = new ArrayBuffer(bytes), v = new DataView(buf);
+              const w = (o, s) => { for (let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+              w(0,'RIFF'); v.setUint32(4, bytes-8, true); w(8,'WAVE'); w(12,'fmt ');
+              v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+              v.setUint32(24,sr,true); v.setUint32(28,sr*2,true); v.setUint16(32,2,true);
+              v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,n*2,true);
+              for (let i=0;i<n;i++) v.setInt16(44+i*2, 18000*Math.sin(2*Math.PI*440*i/sr), true);
+              const wavBlob = new Blob([buf], {type:'audio/wav'});
+
+              const realFetch = window.fetch;
+              window.fetch = (url, opts) => (typeof url==='string' && url.indexOf('/speak')>=0)
+                ? Promise.resolve(new Response(wavBlob, {status:200,
+                    headers:{'Content-Type':'audio/wav'}}))
+                : realFetch(url, opts);
+              window.JARVIS.tts().available = true;
+
+              window.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}));
+              await new Promise(r=>setTimeout(r,250));
+              const core = document.querySelector('#reactor .core');
+              let sawSpeaking=false, maxAmp=0;
+              window.JARVIS.speak('a spoken sentence for the reactor to pulse to');
+              for (let i=0;i<24;i++){
+                await new Promise(r=>setTimeout(r,120));
+                if (window.JARVIS.speaking()) sawSpeaking=true;
+                maxAmp = Math.max(maxAmp, parseFloat(
+                  getComputedStyle(core).getPropertyValue('--amp'))||0);
+              }
+              window.fetch = realFetch;
+              window.JARVIS.tts().available = false;   // back to browser voice for the rest
+              return {sawSpeaking, maxAmp};
+            }""")
+            check.that("cloned-voice audio plays and enters the speaking state",
+                       played["sawSpeaking"] is True)
+            check.that("the reactor pulses to real voice amplitude",
+                       played["maxAmp"] > 0.1, "peak --amp %.3f" % played["maxAmp"])
+            check.that("he returns to idle after speaking",
+                       page.evaluate("window.JARVIS.reactor.state") != "speaking")
+
             # -- personality dials + model picker ---------------------------
             page.click("#gear")
             check.that("settings panel opens", page.is_visible("#settings"))

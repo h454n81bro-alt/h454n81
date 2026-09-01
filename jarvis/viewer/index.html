@@ -94,7 +94,13 @@
   #reactor.listening .outer { animation-duration: 2.2s; border-top-color: #ff5c7c; }
   #reactor.thinking .outer { animation-duration: 1.1s; }
   #reactor.thinking .mid { animation-duration: 1.6s; }
-  #reactor.speaking .core { animation: none; transform: scale(.95); }
+  #reactor.speaking .core {
+    animation: none;
+    transform: scale(calc(0.92 + 0.35 * var(--amp, 0)));
+    box-shadow: 0 0 calc(14px + 26px * var(--amp, 0)) calc(3px + 9px * var(--amp, 0))
+                rgba(120, 220, 255, calc(0.5 + 0.4 * var(--amp, 0)));
+    transition: transform .06s linear, box-shadow .06s linear;
+  }
   /* One kick per spoken word, driven by the utterance's boundary events. */
   #reactor.speaking .core.hit { animation: kick .16s ease-out; }
   @keyframes kick {
@@ -304,6 +310,11 @@
   <h3>Model</h3>
   <select id="modelPick"></select>
   <div class="hint" id="modelNote" style="margin-top:5px"></div>
+  <div id="voiceRow" hidden>
+    <h3>Voice</h3>
+    <select id="voicePick"></select>
+    <div class="hint">ElevenLabs — cloned voice</div>
+  </div>
   <button class="reset" id="resetDials">Reset to the butler</button>
 </div>
 
@@ -454,7 +465,9 @@ const el = {
   eye: document.getElementById("eye"),
   gear: document.getElementById("gear"),
   settings: document.getElementById("settings"),
-  modelPick: document.getElementById("modelPick")
+  modelPick: document.getElementById("modelPick"),
+  voiceRow: document.getElementById("voiceRow"),
+  voicePick: document.getElementById("voicePick")
 };
 
 // ---------------------------------------------------------------------------
@@ -475,6 +488,10 @@ const reactor = {
     el.core.classList.remove("hit");
     void el.core.offsetWidth;          // restart the animation
     el.core.classList.add("hit");
+  },
+  // Live loudness (0..1) from the analyser, so the core swells with his voice.
+  amp: function (level) {
+    el.core.style.setProperty("--amp", (level || 0).toFixed(3));
   }
 };
 
@@ -501,7 +518,8 @@ function loadPrefs() {
 }
 function savePrefs() {
   try {
-    localStorage.setItem("jarvis.prefs", JSON.stringify({ dials: dials, model: chosenModel }));
+    localStorage.setItem("jarvis.prefs",
+      JSON.stringify({ dials: dials, model: chosenModel, voice: tts.voiceId }));
   } catch (err) { /* not worth breaking the page over */ }
 }
 function paintDials() {
@@ -537,6 +555,10 @@ function paintModelNote() {
 el.modelPick.onchange = function (event) {
   chosenModel = event.target.value;
   paintModelNote();
+  savePrefs();
+};
+el.voicePick.onchange = function (event) {
+  tts.voiceId = event.target.value;
   savePrefs();
 };
 
@@ -754,6 +776,13 @@ let voice = null;
 let audioUnlocked = false;
 const canSpeak = "speechSynthesis" in window;
 
+// ElevenLabs cloned voice, when the server offers one. Filled in at boot.
+let tts = { available: false, voiceId: null, voices: [] };
+let audioEl = null;          // the <audio> element playing his cloned voice
+let audioCtx = null;         // one shared WebAudio context
+let analyser = null;         // real amplitude, so the reactor pulses to his actual voice
+let ampRAF = 0;
+
 function pickVoice() {
   if (!canSpeak) return;
   const voices = speechSynthesis.getVoices();
@@ -766,39 +795,129 @@ function pickVoice() {
 if (canSpeak) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 
 let speaking = false;
+let speakToken = 0;          // bumps on every new utterance, so a stale fetch is ignored
 
-function speak(text) {
-  if (!canSpeak || !audioUnlocked || !text) return;
+function onSpeechStart() {
+  speaking = true;
+  setStatus("● speaking…  (Esc to interrupt)", "busy");
+  reactor.set("speaking");
+  reactor.kick();
+}
+function onSpeechEnd() {
+  speaking = false;
+  setStatus("");
+  reactor.set(listening ? "listening" : "idle");
+}
+
+// -- the browser voice (fallback, and the default when no ElevenLabs key) --
+function speakBrowser(text) {
+  if (!canSpeak) return;
   try {
     speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     if (voice) { utter.voice = voice; utter.lang = voice.lang; } else { utter.lang = "en-GB"; }
     utter.rate = 1.03; utter.pitch = 0.92;
-    utter.onstart = function () {
-      speaking = true;
-      setStatus("● speaking…  (Esc to interrupt)", "busy");
-      reactor.set("speaking");
-      reactor.kick();
-    };
-    utter.onboundary = function () { reactor.kick(); };
-    const done = function () {
-      speaking = false;
-      setStatus("");
-      reactor.set(listening ? "listening" : "idle");
-    };
-    utter.onend = done;
-    utter.onerror = done;
+    utter.onstart = onSpeechStart;
+    utter.onboundary = function () { reactor.kick(); };   // per-word, the honest best here
+    utter.onend = onSpeechEnd;
+    utter.onerror = onSpeechEnd;
     speechSynthesis.speak(utter);
   } catch (err) { /* speech is a nicety, never a blocker */ }
 }
 
+// -- his cloned voice: real audio, so the reactor pulses to the waveform ---
+function ensureAudioGraph() {
+  if (!audioEl) {
+    audioEl = new Audio();
+    audioEl.crossOrigin = "anonymous";
+  }
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (Ctx && !audioCtx) {
+    try {
+      audioCtx = new Ctx();
+      const source = audioCtx.createMediaElementSource(audioEl);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+    } catch (err) { audioCtx = null; analyser = null; }  // amplitude is a bonus, not required
+  }
+}
+
+function pumpAmplitude() {
+  cancelAnimationFrame(ampRAF);
+  if (!analyser) return;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  let quiet = 0;
+  (function tick() {
+    if (!speaking) return;
+    analyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    const level = sum / data.length;              // 0..~128 rough loudness
+    reactor.amp(Math.min(1, level / 42));
+    // A loud frame is a fresh "word"; throttle so it kicks on syllables, not every frame.
+    if (level > 22 && quiet <= 0) { reactor.kick(); quiet = 6; }
+    quiet--;
+    ampRAF = requestAnimationFrame(tick);
+  })();
+}
+
+async function speakEleven(text, token) {
+  ensureAudioGraph();
+  let blobUrl = null;
+  try {
+    const response = await fetch("/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text, voice_id: tts.voiceId })
+    });
+    if (!response.ok) throw new Error("tts " + response.status);   // → browser fallback
+    if (token !== speakToken) return true;         // a newer utterance won already
+    const blob = await response.blob();
+    if (token !== speakToken) return true;
+    blobUrl = URL.createObjectURL(blob);
+    if (audioCtx && audioCtx.state === "suspended") { try { await audioCtx.resume(); } catch (e) {} }
+
+    await new Promise(function (resolve, reject) {
+      audioEl.src = blobUrl;
+      audioEl.onplaying = function () { onSpeechStart(); pumpAmplitude(); };
+      audioEl.onended = function () { onSpeechEnd(); resolve(); };
+      audioEl.onerror = function () { reject(new Error("audio")); };
+      audioEl.play().catch(reject);
+    });
+    return true;
+  } catch (err) {
+    return false;             // the caller falls back to the browser voice
+  } finally {
+    if (blobUrl) setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 1000);
+  }
+}
+
+function speak(text) {
+  if (!audioUnlocked || !text) return;
+  stopSpeaking(true);         // quietly clear whatever was playing (bumps speakToken)
+  const token = ++speakToken; // …so take our token AFTER, or speakEleven sees it stale
+  if (tts.available) {
+    speakEleven(text, token).then(function (ok) {
+      // Fall back only if this is still the current utterance and Eleven failed.
+      if (!ok && token === speakToken) speakBrowser(text);
+    });
+  } else {
+    speakBrowser(text);
+  }
+}
+
 // Barge-in: talk over him and he stops, like a person would.
-function stopSpeaking() {
-  if (!canSpeak) return false;
+function stopSpeaking(quiet) {
   const wasSpeaking = speaking;
-  try { speechSynthesis.cancel(); } catch (err) { /* nothing to cancel */ }
+  speakToken++;               // any in-flight ElevenLabs fetch is now stale
+  cancelAnimationFrame(ampRAF);
+  try { if (canSpeak) speechSynthesis.cancel(); } catch (err) { /* nothing to cancel */ }
+  if (audioEl) { try { audioEl.pause(); audioEl.removeAttribute("src"); audioEl.load(); } catch (e) {} }
   speaking = false;
-  if (wasSpeaking) {
+  reactor.amp(0);
+  if (wasSpeaking && !quiet) {
     setStatus("");
     reactor.set(listening ? "listening" : "idle");
   }
@@ -812,10 +931,13 @@ el.answer.addEventListener("click", function () { stopSpeaking(); });
 
 // Browsers refuse audio until the user has interacted with the page.
 function unlockAudio() {
-  if (audioUnlocked || !canSpeak) return;
+  if (audioUnlocked) return;
   audioUnlocked = true;
   el.unlock.hidden = true;
-  try { speechSynthesis.resume(); speechSynthesis.speak(new SpeechSynthesisUtterance(" ")); } catch (e) {}
+  try { if (canSpeak) { speechSynthesis.resume();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(" ")); } } catch (e) {}
+  ensureAudioGraph();
+  if (audioCtx && audioCtx.state === "suspended") { try { audioCtx.resume(); } catch (e) {} }
   if (pendingGreeting) { speak(pendingGreeting); pendingGreeting = null; }
 }
 ["pointerdown", "keydown"].forEach(function (evt) {
@@ -1238,6 +1360,26 @@ fetch("/api/status").then(function (r) { return r.json(); }).then(function (stat
     el.suggestions.appendChild(button);
   });
 
+  if (status.tts && status.tts.available && status.tts.voices && status.tts.voices.length) {
+    tts = { available: true, voiceId: status.tts.voiceId,
+            voices: status.tts.voices };
+    try {
+      var savedVoice = JSON.parse(localStorage.getItem("jarvis.prefs") || "{}").voice;
+      if (savedVoice && status.tts.voices.some(function (v) { return v.id === savedVoice; })) {
+        tts.voiceId = savedVoice;
+      }
+    } catch (e) { /* defaults are fine */ }
+    status.tts.voices.forEach(function (v) {
+      var option = document.createElement("option");
+      option.value = v.id;
+      option.textContent = v.accent ? (v.name + " — " + v.accent) : v.name;
+      option.selected = v.id === tts.voiceId;
+      el.voicePick.appendChild(option);
+    });
+    el.voiceRow.hidden = false;
+    el.badge.textContent += " · elevenlabs";
+  }
+
   showAnswer(status.greeting);
   pendingGreeting = status.greeting;
   if (canSpeak && !audioUnlocked) el.unlock.hidden = false;
@@ -1256,6 +1398,7 @@ window.JARVIS = {
   showAnswer: showAnswer, domainOf: domainOf,
   wantsScreen: wantsScreen, scaledSize: scaledSize, canCapture: canCapture,
   captureScreen: captureScreen, look: look,
+  speak: speak, stopSpeaking: stopSpeaking, tts: function () { return tts; },
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }

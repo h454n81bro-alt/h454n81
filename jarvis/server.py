@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +47,13 @@ CONTEXT_WEIGHT = 0.45  # how much the previous question counts when resolving "t
 WEB_SEARCH_MAX_USES = 5
 VISION_MAX_BYTES = 6 * 1024 * 1024        # the browser downscales before sending
 VISION_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+
+# ElevenLabs text-to-speech (optional; a cloned/British voice in place of the browser's).
+ELEVEN_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/%s"
+ELEVEN_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
+ELEVEN_DEFAULT_MODEL = "eleven_turbo_v2_5"
+ELEVEN_OUTPUT_FORMAT = "mp3_44100_128"
+ELEVEN_MAX_CHARS = 2500          # a spoken answer is short; this is a guard, not a limit
 
 # Dynamic filtering exists on these; anything else (Haiku 4.5, older) gets the
 # basic search tool, which every model accepts.
@@ -304,7 +312,18 @@ def load_config(path=CONFIG_PATH):
     # An exported key is a convenience; config.json still wins if it holds a real one.
     if config.get("api_key") in PLACEHOLDER_KEYS and os.environ.get("ANTHROPIC_API_KEY"):
         config["api_key"] = os.environ["ANTHROPIC_API_KEY"]
+
+    eleven = dict(config.get("elevenlabs") or {})
+    if eleven.get("api_key") in PLACEHOLDER_KEYS.union({None}) and os.environ.get("ELEVENLABS_API_KEY"):
+        eleven["api_key"] = os.environ["ELEVENLABS_API_KEY"]
+    config["elevenlabs"] = eleven
     return config
+
+
+def eleven_key(config):
+    """The ElevenLabs key if one is really set, else None. Never leaves the server."""
+    key = (config.get("elevenlabs") or {}).get("api_key")
+    return key if key and key not in PLACEHOLDER_KEYS else None
 
 
 def resolve_model(requested, config):
@@ -659,6 +678,85 @@ def call_claude_cli_vision(system, question, image_path, timeout=180):
     return text
 
 
+def eleven_voices(config, timeout=15):
+    """The user's ElevenLabs voices as [{id, name, accent}]. Empty on any failure."""
+    key = eleven_key(config)
+    if not key:
+        return []
+    request = urllib.request.Request(
+        ELEVEN_VOICES_URL, headers={"xi-api-key": key}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, ValueError):
+        return []
+    voices = []
+    for voice in body.get("voices", []):
+        labels = voice.get("labels") or {}
+        voices.append({
+            "id": voice.get("voice_id"),
+            "name": voice.get("name") or voice.get("voice_id"),
+            "accent": labels.get("accent") or labels.get("description") or "",
+        })
+    return [v for v in voices if v["id"]]
+
+
+def eleven_speak(config, text, voice_id=None, timeout=45):
+    """Turn text into speech via ElevenLabs. Returns (mp3_bytes, content_type).
+
+    Raises BackendError on anything the browser should fall back to browser speech
+    for — a missing key, a refused key, an unreachable service.
+    """
+    key = eleven_key(config)
+    if not key:
+        raise BackendError("No ElevenLabs voice is configured, sir.")
+
+    text = (text or "").strip()
+    if not text:
+        raise BackendError("There was nothing to say, sir.")
+    text = text[:ELEVEN_MAX_CHARS]
+
+    settings = config.get("elevenlabs") or {}
+    voice = voice_id or settings.get("voice_id")
+    if not voice:
+        raise BackendError("No ElevenLabs voice has been chosen, sir.")
+
+    payload = {
+        "text": text,
+        "model_id": settings.get("model_id") or ELEVEN_DEFAULT_MODEL,
+        "voice_settings": {
+            "stability": settings.get("stability", 0.4),
+            "similarity_boost": settings.get("similarity_boost", 0.75),
+            "style": settings.get("style", 0.15),
+        },
+    }
+    url = (ELEVEN_TTS_URL % urllib.parse.quote(voice)) + "?output_format=" + ELEVEN_OUTPUT_FORMAT
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"xi-api-key": key, "content-type": "application/json",
+                 "accept": "audio/mpeg"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            audio = response.read()
+            content_type = response.headers.get("content-type", "audio/mpeg")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        if exc.code == 401:
+            raise BackendError("The ElevenLabs key was refused, sir.")
+        if exc.code == 429:
+            raise BackendError("ElevenLabs is rate limiting us, sir.")
+        raise BackendError("ElevenLabs returned %s: %s" % (exc.code, detail))
+    except urllib.error.URLError as exc:
+        raise BackendError("I cannot reach ElevenLabs, sir — %s" % exc.reason)
+
+    if not audio:
+        raise BackendError("ElevenLabs sent back no audio, sir.")
+    return audio, content_type
+
+
 def decode_frame(image_b64, media_type):
     """Validate what the browser sent before it goes anywhere near the model."""
     if media_type not in VISION_MEDIA_TYPES:
@@ -758,6 +856,24 @@ class Jarvis(object):
         self.lock = threading.Lock()
         self.sessions = {}
         self.graph = build.build_graph(self.notes_dir)
+
+        # Cloned-voice TTS is optional. Probe once so the browser knows which voice
+        # path to take; the key itself never leaves this process.
+        self.tts_available = eleven_key(config) is not None
+        self.voices = eleven_voices(config) if self.tts_available else []
+        configured = (config.get("elevenlabs") or {}).get("voice_id")
+        self.default_voice = configured or (self.voices[0]["id"] if self.voices else None)
+
+    def speak(self, text, voice_id=None):
+        """(audio_bytes, content_type) via ElevenLabs, or raise BackendError."""
+        return eleven_speak(self.config, text, voice_id or self.default_voice)
+
+    def tts_status(self):
+        return {
+            "available": self.tts_available and bool(self.default_voice),
+            "voices": self.voices,
+            "voiceId": self.default_voice,
+        }
 
     # -- state ------------------------------------------------------------
     @property
@@ -1280,6 +1396,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "models": MODELS if j.backend != "offline" else [],
                 "defaultModel": resolve_model(None, j.config) if j.backend != "offline" else None,
                 "dials": DEFAULT_DIALS,
+                "tts": j.tts_status(),
             })
 
         target = self.resolve_static(route)
@@ -1300,7 +1417,8 @@ class JarvisHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         route = self.path.split("?", 1)[0]
         # A screen frame is orders of magnitude larger than a question.
-        limit = 12 * 1024 * 1024 if route == "/vision" else 64 * 1024
+        limit = 12 * 1024 * 1024 if route == "/vision" else (
+            256 * 1024 if route == "/speak" else 64 * 1024)
         payload = self.read_json(limit=limit)
         if payload is None:
             return self.send_error_json(400, "Expected a JSON body")
@@ -1311,6 +1429,23 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 payload.get("session") or "default",
                 dials=payload.get("dials"),
                 model=payload.get("model")))
+
+        if route == "/speak":
+            text = payload.get("text", "")
+            voice_id = payload.get("voice_id")
+            try:
+                audio, content_type = self.jarvis.speak(text, voice_id)
+            except BackendError as exc:
+                # A JSON error, not audio: the browser reads this and falls back to
+                # the built-in browser voice rather than going silent.
+                return self.send_error_json(503, str(exc))
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(audio)
+            return
 
         if route == "/vision":
             return self.send_json(self.jarvis.look(
@@ -1374,6 +1509,10 @@ def main(argv=None):
     print("\n  JARVIS online.")
     print("  %d notes indexed from %s" % (jarvis.note_count, jarvis.notes_dir))
     print("  Brain: %s" % backend_note)
+    if jarvis.tts_available and jarvis.default_voice:
+        print("  Voice: ElevenLabs (%d voice(s) available)" % len(jarvis.voices))
+    elif jarvis.config.get("elevenlabs", {}).get("api_key"):
+        print("  Voice: ElevenLabs key set, but no voice could be loaded — using the browser voice")
     print("\n  Open  http://localhost:%d  in Google Chrome.\n" % args.port)
     try:
         server.serve_forever()

@@ -5,6 +5,7 @@
 """
 
 import base64
+import io
 import json
 import os
 import re
@@ -327,6 +328,104 @@ def tiny_png(width=8, height=8, rgb=(200, 30, 30)):
             + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows))
             + chunk(b"IEND", b""))
+
+
+class TestElevenLabsVoice(unittest.TestCase):
+    """The cloned-voice TTS proxy, with ElevenLabs' HTTP layer stubbed."""
+
+    def setUp(self):
+        self.calls = []
+        self._orig = urllib.request.urlopen
+
+        def fake(request, timeout=None):
+            self.calls.append((request.full_url, dict(request.headers), request.method,
+                               request.data))
+            return self._respond(request)
+
+        urllib.request.urlopen = fake
+        self.addCleanup(setattr, urllib.request, "urlopen", self._orig)
+
+    def _respond(self, request):
+        outer = self
+
+        class Resp(object):
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+            headers = {"content-type": "audio/mpeg"}
+            def read(self_):
+                if "voices" in request.full_url and request.method == "GET":
+                    return json.dumps({"voices": [
+                        {"voice_id": "v-brit", "name": "George",
+                         "labels": {"accent": "British"}},
+                        {"voice_id": "v-us", "name": "Rachel",
+                         "labels": {"accent": "American"}},
+                    ]}).encode()
+                return b"ID3\x03\x00FAKE-MP3"
+        return Resp()
+
+    def jarvis(self, eleven):
+        return server.Jarvis(
+            self.dir if hasattr(self, "dir") else "notes",
+            {"api_key": "x", "backend": "api", "elevenlabs": eleven},
+            graph_js=os.devnull, activity_log=os.devnull)
+
+    def test_no_key_means_tts_is_unavailable(self):
+        j = self.jarvis({})
+        self.assertFalse(j.tts_status()["available"])
+        with self.assertRaises(server.BackendError):
+            j.speak("hello")
+
+    def test_a_placeholder_key_is_not_a_key(self):
+        j = self.jarvis({"api_key": "PUT-YOUR-KEY-HERE"})
+        self.assertFalse(j.tts_status()["available"])
+
+    def test_voices_load_and_the_first_is_the_default(self):
+        j = self.jarvis({"api_key": "sk-el-real"})
+        status = j.tts_status()
+        self.assertTrue(status["available"])
+        self.assertEqual(status["voiceId"], "v-brit")
+        self.assertEqual([v["name"] for v in status["voices"]], ["George", "Rachel"])
+
+    def test_a_configured_voice_id_wins_over_the_first(self):
+        j = self.jarvis({"api_key": "sk-el-real", "voice_id": "v-us"})
+        self.assertEqual(j.tts_status()["voiceId"], "v-us")
+
+    def test_speak_returns_audio_and_the_key_travels_as_a_header_only(self):
+        j = self.jarvis({"api_key": "sk-el-SECRET"})
+        audio, content_type = j.speak("Good evening, sir.")
+        self.assertTrue(audio)
+        self.assertEqual(content_type, "audio/mpeg")
+        tts_calls = [c for c in self.calls if "text-to-speech" in c[0]]
+        self.assertTrue(tts_calls)
+        url, headers, method, data = tts_calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(headers.get("Xi-api-key"), "sk-el-SECRET")
+        self.assertNotIn("SECRET", url)                 # never in the URL
+        self.assertNotIn(b"SECRET", data)               # never in the body
+        self.assertIn("v-brit", url)                    # default voice in the path
+
+    def test_an_explicit_voice_overrides_the_default(self):
+        j = self.jarvis({"api_key": "sk-el-real"})
+        j.speak("hello", voice_id="v-us")
+        self.assertIn("v-us", self.calls[-1][0])
+
+    def test_a_refused_key_becomes_a_polite_error(self):
+        j = self.jarvis({"api_key": "sk-el-bad"})
+
+        def refuse(request, timeout=None):
+            if "voices" in request.full_url:
+                return self._respond(request)
+            raise urllib.error.HTTPError(request.full_url, 401, "no", {},
+                                         __import__("io").BytesIO(b"{}"))
+        urllib.request.urlopen = refuse
+        with self.assertRaises(server.BackendError) as caught:
+            j.speak("hello")
+        self.assertIn("refused", str(caught.exception).lower())
+
+    def test_empty_text_is_refused(self):
+        j = self.jarvis({"api_key": "sk-el-real"})
+        with self.assertRaises(server.BackendError):
+            j.speak("   ")
 
 
 class TestVisionFrameValidation(unittest.TestCase):
@@ -1144,6 +1243,96 @@ class TestHttp(TempVault):
 # ---------------------------------------------------------------------------
 # The Anthropic call itself
 # ---------------------------------------------------------------------------
+
+class TestSpeakRoute(TempVault):
+    """The /speak route serves audio and never leaks the ElevenLabs key."""
+
+    def setUp(self):
+        super(TestSpeakRoute, self).setUp()
+        seed_notes.seed(self.dir)
+        os.environ["JARVIS_QUIET"] = "1"
+        self._orig = urllib.request.urlopen
+
+        orig = self._orig
+
+        def fake(request, timeout=None, **kw):
+            url = request if isinstance(request, str) else request.full_url
+            if "api.elevenlabs.io" not in url:
+                return orig(request, timeout=timeout, **kw)   # real localhost HTTP
+            method = "GET" if isinstance(request, str) else request.method
+
+            class Resp(object):
+                status = 200
+                def __enter__(self_): return self_
+                def __exit__(self_, *a): return False
+                headers = {"content-type": "audio/mpeg"}
+                def read(self_):
+                    if "voices" in url:
+                        return json.dumps({"voices": [
+                            {"voice_id": "v1", "name": "George",
+                             "labels": {"accent": "British"}}]}).encode()
+                    return b"ID3\x03\x00AUDIODATA"
+            return Resp()
+
+        urllib.request.urlopen = fake
+        self.addCleanup(setattr, urllib.request, "urlopen", self._orig)
+
+        self.jarvis = server.Jarvis(
+            self.dir, {"api_key": "sk-ant-x", "backend": "api",
+                       "elevenlabs": {"api_key": "sk-el-TOPSECRET"}},
+            graph_js=os.path.join(self.dir, "graph-data.js"),
+            activity_log=os.path.join(self.dir, "activity.log"))
+        self.httpd = server.make_server(self.jarvis, port=0)
+        self.port = self.httpd.server_address[1]
+        thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def url(self, path):
+        return "http://127.0.0.1:%d%s" % (self.port, path)
+
+    def test_status_advertises_the_voice_without_the_key(self):
+        with urllib.request.urlopen(self.url("/api/status"), timeout=10) as r:
+            body = r.read().decode()
+        self.assertNotIn("TOPSECRET", body)
+        payload = json.loads(body)
+        self.assertTrue(payload["tts"]["available"])
+        self.assertEqual(payload["tts"]["voiceId"], "v1")
+
+    def test_speak_returns_audio_bytes(self):
+        request = urllib.request.Request(
+            self.url("/speak"), data=json.dumps({"text": "Good evening, sir."}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=15) as r:
+            self.assertEqual(r.status, 200)
+            self.assertTrue(r.headers["Content-Type"].startswith("audio"))
+            audio = r.read()
+        self.assertTrue(audio.startswith(b"ID3"))
+        self.assertNotIn(b"TOPSECRET", audio)
+
+    def test_speak_failure_is_a_json_error_to_fall_back_on(self):
+        # Point the key at a 401 so the browser gets JSON, not audio, and can
+        # fall back to the browser voice.
+        orig = self._orig
+
+        def refuse(request, timeout=None, **kw):
+            url = request if isinstance(request, str) else request.full_url
+            if "api.elevenlabs.io" not in url:
+                return orig(request, timeout=timeout, **kw)
+            raise urllib.error.HTTPError(url, 401, "no", {}, io.BytesIO(b"{}"))
+        urllib.request.urlopen = refuse
+        request = urllib.request.Request(
+            self.url("/speak"), data=json.dumps({"text": "hi"}).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(request, timeout=15)
+            self.fail("expected an HTTP error")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 503)
+            payload = json.loads(exc.read().decode())
+            self.assertIn("error", payload)
+
 
 class TestAnthropicRequest(unittest.TestCase):
 
