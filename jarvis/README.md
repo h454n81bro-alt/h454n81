@@ -30,6 +30,7 @@ TARS-style personality dials, and model hot-swap.
   beyond    Screen vision    👁  "Jarvis, what am I looking at?"
   beyond    Cloned voice     ElevenLabs — the reactor pulses to his real waveform
   beyond    Morning brief    "Good morning" — real Gmail + Calendar, inbox triage
+  beyond    Agent hands      "Draft a reply to…" — composed, then a "do it" gate
 ```
 
 ## Quick start
@@ -82,6 +83,24 @@ To use the API, put your key in `config.json` (created for you on first run):
 > There is a test that tries a dozen ways to fetch it and asserts every one fails.
 
 Force a backend with `python3 server.py --backend offline|cli|api`.
+
+## Agent hands — drafting email, gated
+
+Say **"draft a reply to Two Rivers"** or **"write an email to ops@hotel.com about the
+order"** and he composes it — resolving the recipient from your inbox when you name a
+person — then shows it as a card and waits. Nothing is created until you say **"do it"**
+(or press the green button); **"no"** discards it. Even then he only ever **saves a
+draft** to Gmail — he never sends. This is the one place JARVIS writes anything, so it
+is deliberately a two-step, human-in-the-loop action.
+
+It reuses the same Google connection as the brief, plus one extra scope
+(`gmail.compose`) that you opt into during setup — read-only users are never asked for
+write access. Re-run `setup_google.py` and answer yes to "Enable draft-writing?" to turn
+it on; until then he'll say he can read your mail but not draft it.
+
+The safety invariants are covered by tests: nothing is created before the gate, the
+pending draft is per-session (your "do it" can't trigger someone else's draft), and a
+failed save keeps the draft so a fixed retry still works.
 
 ## Morning brief (Gmail + Calendar)
 
@@ -284,6 +303,7 @@ honour the choice. Your dials and model are remembered in `localStorage`.
 - Press **👁** and point him at anything on your screen.
 - Add an ElevenLabs key and watch the reactor pulse to his real voice.
 - Connect Google and say **"good morning"** for a brief off your real inbox.
+- Enable agent hands and say **"draft a reply to …"**, review, then **"do it"**.
 
 ## How it works
 
@@ -318,7 +338,7 @@ A few details that matter:
 ## Testing
 
 ```bash
-python3 tests/test_jarvis.py          # 153 tests, standard library only
+python3 tests/test_jarvis.py          # 170 tests, standard library only
 ```
 
 Covers the graph builder, the link rules, retrieval ranking (including follow-up
@@ -373,6 +393,7 @@ the project, so your notes are never touched.
 | "I have no eyes without a brain behind them" | Vision needs the API or the `claude` CLI; offline mode cannot see. |
 | "I have no line to your inbox" | Run `python3 setup_google.py` to connect Gmail + Calendar. |
 | "Google refused the request (403)" | The token was revoked or scopes changed — re-run `setup_google.py`. |
+| "I can read your mail but not draft it" | Re-run `setup_google.py` and answer yes to "Enable draft-writing?". |
 | Still hear the browser voice with a key set | Check `config.json`'s `elevenlabs.api_key`, and pick a voice in the ⚙ panel. A refused key falls back silently to the browser voice. |
 | Galaxy never appears | The library failed to load. `viewer/vendor/3d-force-graph.min.js` should exist; otherwise you need network access for the CDN fallback. |
 

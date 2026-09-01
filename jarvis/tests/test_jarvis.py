@@ -433,6 +433,54 @@ class TestGoogleApi(unittest.TestCase):
         self.assertTrue(events[1]["all_day"])
         self.assertEqual(events[1]["when"], "all day")
 
+    def test_create_draft_posts_encoded_rfc822(self):
+        seen = {}
+
+        def router(url, method, data):
+            seen["url"] = url
+            seen["method"] = method
+            seen["payload"] = json.loads(data.decode())
+            return {"id": "draft-1", "message": {"id": "m1"}}
+
+        self.stub(router)
+        draft_id = google_api.create_draft("at", "ops@x.com", "Re: Order", "Hello there.")
+        self.assertEqual(draft_id, "draft-1")
+        self.assertEqual(seen["url"], google_api.GMAIL_DRAFTS)
+        self.assertEqual(seen["method"], "POST")
+        import base64
+        raw = base64.urlsafe_b64decode(seen["payload"]["message"]["raw"]).decode()
+        self.assertIn("To: ops@x.com", raw)
+        self.assertIn("Subject: Re: Order", raw)
+        self.assertIn("Hello there.", raw)
+
+    def test_create_draft_403_points_at_agent_hands(self):
+        def fake(request, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            raise urllib.error.HTTPError(url, 403, "no", {}, io.BytesIO(b"{}"))
+        urllib.request.urlopen = fake
+        with self.assertRaises(google_api.GoogleError) as caught:
+            google_api.create_draft("at", "ops@x.com", "s", "b")
+        self.assertIn("agent hands", str(caught.exception).lower())
+
+    def test_compose_scope_only_on_request(self):
+        read_only = google_api.consent_url("c", "http://127.0.0.1:4711/", "st")
+        self.assertNotIn("gmail.compose", read_only)
+        with_write = google_api.consent_url(
+            "c", "http://127.0.0.1:4711/", "st",
+            scopes=google_api.READ_SCOPES + [google_api.COMPOSE_SCOPE])
+        self.assertIn("gmail.compose", with_write)
+
+    def test_recent_email_keeps_the_address(self):
+        def router(url, method, data):
+            if "messages/" in url:
+                return {"snippet": "", "labelIds": ["UNREAD"], "payload": {"headers": [
+                    {"name": "From", "value": "Dani <dani@x.com>"},
+                    {"name": "Subject", "value": "Hi"}]}}
+            return {"messages": [{"id": "m1"}]}
+        self.stub(router)
+        emails = google_api.recent_email("at")
+        self.assertEqual(emails[0]["email"], "dani@x.com")
+
     def test_a_403_tells_the_user_to_re_run_setup(self):
         def fake(request, timeout=None):
             url = request if isinstance(request, str) else request.full_url
@@ -458,6 +506,40 @@ class TestBriefTrigger(unittest.TestCase):
                   "what was I doing yesterday", "remember that email marketing works",
                   "what is the email newsletter strategy", "how do I email a wholesale account"]:
             self.assertFalse(server.is_brief_query(q), q)
+
+
+class TestDraftTriggers(unittest.TestCase):
+
+    def test_draft_requests_trigger(self):
+        for q in ["draft a reply to Two Rivers", "write an email to ops@hotel.com about the order",
+                  "reply to Dani", "compose a note to the bakery",
+                  "respond to that contract email", "draft a reply to the hotel"]:
+            self.assertTrue(server.is_draft_query(q), q)
+
+    def test_non_drafts_do_not_trigger(self):
+        for q in ["what is our pricing strategy", "good morning",
+                  "remember that I drafted a plan", "research draft beer trends",
+                  "what do my notes say about email"]:
+            self.assertFalse(server.is_draft_query(q), q)
+
+    def test_confirmation_and_cancellation(self):
+        for q in ["do it", "send it", "yes do it", "looks good", "go ahead", "save it"]:
+            self.assertTrue(server.is_confirmation(q), q)
+            self.assertFalse(server.is_cancellation(q), q)
+        for q in ["no", "cancel", "scrap it", "forget it", "never mind"]:
+            self.assertTrue(server.is_cancellation(q), q)
+            self.assertFalse(server.is_confirmation(q), q)
+
+    def test_parse_draft_splits_subject_and_body(self):
+        subject, body = server.parse_draft(
+            "SUBJECT: Re: Contract\n---\nDear Two Rivers,\n\nThanks for sending it.")
+        self.assertEqual(subject, "Re: Contract")
+        self.assertEqual(body, "Dear Two Rivers,\n\nThanks for sending it.")
+
+    def test_parse_draft_without_markers_keeps_the_text_as_body(self):
+        subject, body = server.parse_draft("Just some body text with no headers.")
+        self.assertEqual(subject, "")
+        self.assertIn("body text", body)
 
 
 class TestElevenLabsVoice(unittest.TestCase):
@@ -1038,6 +1120,107 @@ class TestAsk(StubbedJarvis):
         self.assertIn(str(self.jarvis.note_count), greeting)
         self.assertIn("sir", greeting)
         self.assertRegex(greeting, r"Good (morning|afternoon|evening)")
+
+
+class TestAgentHandsDraft(unittest.TestCase):
+    """The write path — a draft is composed, held, and only created on "do it"."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="jarvis-draft-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        seed_notes.seed(os.path.join(self.dir, "notes"))
+
+        self.created = []
+        self._saved = (google_api.access_token, google_api.recent_email,
+                       google_api.create_draft, server.call_anthropic)
+        google_api.access_token = lambda cfg: "at"
+        google_api.recent_email = lambda tok, query=None, max_results=8, timeout=30: [
+            {"from": "Two Rivers Hotel", "email": "ops@tworivers.com",
+             "subject": "Wholesale contract", "snippet": "attached", "unread": True},
+        ]
+        google_api.create_draft = lambda tok, to, subject, body, timeout=30: (
+            self.created.append({"to": to, "subject": subject, "body": body}) or "draft-1")
+        server.call_anthropic = lambda cfg, sys_, msgs, timeout=60, model=None: (
+            "SUBJECT: Re: Wholesale contract\n---\nHappy to review it before our call.")
+
+        def restore():
+            (google_api.access_token, google_api.recent_email,
+             google_api.create_draft, server.call_anthropic) = self._saved
+        self.addCleanup(restore)
+
+        self.jarvis = server.Jarvis(
+            os.path.join(self.dir, "notes"),
+            {"api_key": "sk-ant-x", "backend": "api",
+             "google": {"client_id": "c", "client_secret": "s", "refresh_token": "r",
+                        "compose": True}},
+            graph_js=os.path.join(self.dir, "g.js"),
+            activity_log=os.path.join(self.dir, "a.log"))
+
+    def test_drafting_composes_but_does_not_create(self):
+        result = self.jarvis.ask("draft a reply to Two Rivers", "s1")
+        self.assertEqual(result["mode"], "draft")
+        self.assertEqual(result["draft"]["to"], "ops@tworivers.com")   # resolved from inbox
+        self.assertEqual(result["draft"]["subject"], "Re: Wholesale contract")
+        self.assertIn("review", result["draft"]["body"].lower())
+        self.assertEqual(self.created, [], "nothing may be created before the gate")
+
+    def test_do_it_creates_the_draft(self):
+        self.jarvis.ask("draft a reply to Two Rivers", "s1")
+        result = self.jarvis.ask("do it", "s1")
+        self.assertEqual(result["mode"], "draft_saved")
+        self.assertEqual(len(self.created), 1)
+        self.assertEqual(self.created[0]["to"], "ops@tworivers.com")
+
+    def test_cancelling_discards_and_creates_nothing(self):
+        self.jarvis.ask("draft a reply to Two Rivers", "s1")
+        result = self.jarvis.ask("no, scrap it", "s1")
+        self.assertEqual(result["mode"], "draft_cancelled")
+        self.assertEqual(self.created, [])
+        # And a later "do it" now has nothing waiting.
+        after = self.jarvis.ask("do it", "s1")
+        self.assertNotEqual(after["mode"], "draft_saved")
+        self.assertEqual(self.created, [])
+
+    def test_do_it_with_nothing_pending_creates_nothing(self):
+        result = self.jarvis.ask("do it", "s1")
+        self.assertNotEqual(result.get("mode"), "draft_saved")
+        self.assertEqual(self.created, [])
+
+    def test_pending_draft_is_per_session(self):
+        self.jarvis.ask("draft a reply to Two Rivers", "alice")
+        # Bob says "do it" but has no draft waiting — nothing should be created.
+        self.jarvis.ask("do it", "bob")
+        self.assertEqual(self.created, [])
+        self.jarvis.ask("do it", "alice")
+        self.assertEqual(len(self.created), 1)
+
+    def test_a_google_failure_on_commit_keeps_the_draft_for_retry(self):
+        self.jarvis.ask("draft a reply to Two Rivers", "s1")
+
+        def boom(tok, to, subject, body, timeout=30):
+            raise google_api.GoogleError("Google won't let me write drafts (403).")
+        google_api.create_draft = boom
+        failed = self.jarvis.ask("do it", "s1")
+        self.assertTrue(failed.get("error"))
+        self.assertEqual(self.created, [])
+        # The draft is still pending, so a fixed retry can succeed.
+        google_api.create_draft = lambda tok, to, subject, body, timeout=30: (
+            self.created.append({"to": to}) or "d2")
+        ok = self.jarvis.ask("do it", "s1")
+        self.assertEqual(ok["mode"], "draft_saved")
+        self.assertEqual(len(self.created), 1)
+
+    def test_compose_not_enabled_refuses_before_composing(self):
+        j = server.Jarvis(
+            os.path.join(self.dir, "notes"),
+            {"api_key": "sk-ant-x", "backend": "api",
+             "google": {"client_id": "c", "client_secret": "s", "refresh_token": "r"}},
+            graph_js=os.path.join(self.dir, "g2.js"),
+            activity_log=os.path.join(self.dir, "a2.log"))
+        result = j.ask("draft a reply to Two Rivers", "s1")
+        self.assertEqual(result["mode"], "idle")
+        self.assertIn("agent hands", result["answer"].lower())
+        self.assertEqual(self.created, [])
 
 
 class TestMorningBrief(unittest.TestCase):

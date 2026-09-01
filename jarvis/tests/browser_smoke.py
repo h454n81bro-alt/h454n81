@@ -267,6 +267,46 @@ def main():
             check.that("Escape does not throw or break the page",
                        page.evaluate("window.JARVIS.speaking()") is False)
 
+            # -- agent hands: the draft card and its do-it gate ---------------
+            page.evaluate("""() => {
+              const card = window.JARVIS.renderDraft(
+                {to:'ops@tworivers.com', subject:'Re: Contract',
+                 body:'Happy to review it before our call.'});
+              const a = document.getElementById('answer');
+              a.textContent = "Here's a draft to Two Rivers.";
+              a.appendChild(card);
+              a.classList.add('show');
+            }""")
+            check.that("the draft card renders with To/Subject/Body",
+                       page.locator("#answer .draft .field").count() == 3)
+            check.that("the recipient is shown", "ops@tworivers.com" in page.inner_text("#answer"))
+            check.that("a Do-it and a Discard button are offered",
+                       page.locator("#answer .draft .doit").count() == 1
+                       and page.locator("#answer .draft .nope").count() == 1)
+            # Clicking Do-it should submit "do it" — capture what submit sends.
+            page.evaluate("window.__sent = []; "
+                          "const s = window.JARVIS.submit; window.JARVIS.submit = null;")
+            # renderDraft closes over the module-scope submit, so patch that path instead:
+            sent_word = page.evaluate("""async () => {
+              let captured = null;
+              const orig = window.fetch;
+              window.fetch = (url, opts) => {
+                if (typeof url==='string' && url.indexOf('/chat')>=0) {
+                  try { captured = JSON.parse(opts.body).question; } catch(e){}
+                  return Promise.resolve(new Response(JSON.stringify(
+                    {answer:'Saved, sir.', nodes:[], sources:[], mode:'draft_saved'}),
+                    {status:200, headers:{'Content-Type':'application/json'}}));
+                }
+                return orig(url, opts);
+              };
+              document.querySelector('#answer .draft .doit').click();
+              await new Promise(r=>setTimeout(r,400));
+              window.fetch = orig;
+              return captured;
+            }""")
+            check.that("clicking Do-it submits the confirmation", sent_word == "do it",
+                       "sent %r" % sent_word)
+
             # -- morning brief card (rendered directly; no Google in this test) ---
             page.evaluate("""() => window.JARVIS.showAnswer(
               'Good morning, sir. Standup at 9:15, then the hotel call at two.',

@@ -230,6 +230,29 @@
   #answer .brief .what { color: #9db0cf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #answer .brief .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 5px; flex: none; background: #ff6b8b; }
   #answer .brief .item.read .dot { background: transparent; border: 1px solid rgba(150,190,255,.3); }
+  #answer .draft {
+    margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  }
+  #answer .draft .field {
+    display: flex; gap: 8px; padding: 6px 11px; font-size: 12.5px;
+    border-bottom: 1px solid rgba(150,190,255,.08);
+  }
+  #answer .draft .field .k {
+    color: var(--dim); flex: none; min-width: 52px; text-transform: uppercase;
+    font-size: 10px; letter-spacing: .1em; padding-top: 2px;
+  }
+  #answer .draft .field .v { color: #dfe8f7; white-space: pre-wrap; }
+  #answer .draft .field.body .v { color: #c9d6ee; max-height: 160px; overflow-y: auto; }
+  #answer .draft .act { display: flex; gap: 8px; padding: 9px 11px; }
+  #answer .draft .act button {
+    padding: 5px 14px; border-radius: 8px; font: inherit; font-size: 12.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  #answer .draft .doit { background: #1f7a4d; border: 1px solid #2ea866; color: #fff; }
+  #answer .draft .doit:hover { background: #269159; }
+  #answer .draft .nope { background: rgba(255,255,255,.05); border: 1px solid var(--line); color: #9db0cf; }
+  #answer .draft .nope:hover { color: #fff; }
+  #answer .draft .saved { color: #7dffb3; font-size: 12px; padding: 8px 11px; }
   #answer .cited {
     display: block; margin-top: 10px; font-size: 11px; color: var(--dim);
     letter-spacing: .04em;
@@ -1203,6 +1226,44 @@ function domainOf(url) {
   }
 }
 
+function renderDraft(draft) {
+  const wrap = document.createElement("div");
+  wrap.className = "draft";
+  const field = function (key, value) {
+    const row = document.createElement("div");
+    row.className = "field" + (key === "Body" ? " body" : "");
+    row.innerHTML = '<span class="k"></span><span class="v"></span>';
+    row.querySelector(".k").textContent = key;
+    row.querySelector(".v").textContent = value;
+    wrap.appendChild(row);
+  };
+  field("To", draft.to || "(no address)");
+  field("Subject", draft.subject || "(no subject)");
+  field("Body", draft.body || "");
+
+  const act = document.createElement("div");
+  act.className = "act";
+  const doit = document.createElement("button");
+  doit.className = "doit"; doit.textContent = "✓ Do it — save to drafts";
+  const nope = document.createElement("button");
+  nope.className = "nope"; nope.textContent = "Discard";
+  const settle = function (word) {
+    return function () {
+      act.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "saved";
+      note.textContent = word === "do it" ? "Saving…" : "Discarded.";
+      wrap.appendChild(note);
+      submit(word);
+    };
+  };
+  doit.onclick = settle("do it");
+  nope.onclick = settle("discard");
+  act.appendChild(doit); act.appendChild(nope);
+  wrap.appendChild(act);
+  return wrap;
+}
+
 function renderBrief(brief) {
   const wrap = document.createElement("div");
   wrap.className = "brief";
@@ -1313,6 +1374,7 @@ async function ask(text) {
   const answer = result.data;
   setStatus("");
   showAnswer(answer.answer, answer.sources, answer.citations, answer.brief);
+  if (answer.draft) el.answer.appendChild(renderDraft(answer.draft));
   speak(answer.answer);
 
   // Prompt 4: prove where the answer came from.
@@ -1461,7 +1523,7 @@ window.JARVIS = {
   wantsScreen: wantsScreen, scaledSize: scaledSize, canCapture: canCapture,
   captureScreen: captureScreen, look: look,
   speak: speak, stopSpeaking: stopSpeaking, tts: function () { return tts; },
-  renderBrief: renderBrief,
+  renderBrief: renderBrief, renderDraft: renderDraft,
   dials: function () { return dials; },
   model: function () { return chosenModel; },
   speaking: function () { return speaking; }

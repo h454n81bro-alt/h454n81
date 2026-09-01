@@ -23,10 +23,17 @@ GMAIL_GET = "https://gmail.googleapis.com/gmail/v1/users/me/messages/%s"
 CALENDAR_EVENTS = "https://www.googleapis.com/calendar/v3/calendars/%s/events"
 
 # Read-only: this feature never sends mail or edits a calendar.
-SCOPES = [
+# Read-only by default. gmail.compose is added only when the user opts into
+# "agent hands" (draft writing) during setup — it is the one write scope here,
+# and even then JARVIS only ever creates a DRAFT, never sends.
+READ_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
 ]
+COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+SCOPES = READ_SCOPES                       # back-compat default (read-only)
+
+GMAIL_DRAFTS = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
 
 PLACEHOLDERS = {"", None, "PUT-YOUR-CLIENT-ID-HERE", "PUT-YOUR-CLIENT-SECRET-HERE"}
 
@@ -81,12 +88,12 @@ def _get_json(url, access_token, timeout=30):
 # OAuth
 # ---------------------------------------------------------------------------
 
-def consent_url(client_id, redirect_uri, state):
+def consent_url(client_id, redirect_uri, state, scopes=None):
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(SCOPES),
+        "scope": " ".join(scopes or READ_SCOPES),
         "access_type": "offline",      # we want a refresh token
         "prompt": "consent",           # force a refresh token even on re-auth
         "state": state,
@@ -135,13 +142,18 @@ def _header(headers, name):
     return ""
 
 
-def _clean_sender(value):
-    """"Dani Marlowe <dani@x.com>" -> "Dani Marlowe"."""
+def _split_sender(value):
+    """"Dani Marlowe <dani@x.com>" -> ("Dani Marlowe", "dani@x.com")."""
     value = (value or "").strip()
-    if "<" in value:
+    if "<" in value and ">" in value:
         name = value.split("<", 1)[0].strip().strip('"')
-        return name or value.split("<", 1)[1].rstrip(">")
-    return value
+        addr = value.split("<", 1)[1].split(">", 1)[0].strip()
+        return (name or addr), addr
+    return value, value
+
+
+def _clean_sender(value):
+    return _split_sender(value)[0]
 
 
 def recent_email(token, query="is:unread -category:promotions -category:social",
@@ -158,8 +170,10 @@ def recent_email(token, query="is:unread -category:promotions -category:social",
                  ("metadataHeaders", "From"), ("metadataHeaders", "Subject")]),
             token, timeout=timeout)
         headers = (detail.get("payload") or {}).get("headers", [])
+        name, address = _split_sender(_header(headers, "From"))
         out.append({
-            "from": _clean_sender(_header(headers, "From")),
+            "from": name,
+            "email": address,
             "subject": _header(headers, "Subject") or "(no subject)",
             "snippet": (detail.get("snippet") or "").strip(),
             "unread": "UNREAD" in (detail.get("labelIds") or []),
@@ -170,6 +184,37 @@ def recent_email(token, query="is:unread -category:promotions -category:social",
 # ---------------------------------------------------------------------------
 # Calendar
 # ---------------------------------------------------------------------------
+
+def create_draft(token, to, subject, body, timeout=30):
+    """Create a Gmail DRAFT (never sends). Returns the draft id.
+
+    Needs the gmail.compose scope; a 403 means the user connected read-only and
+    must re-run setup_google.py with agent hands enabled.
+    """
+    import base64
+    if not to:
+        raise GoogleError("There is no one to address that to, sir.")
+    raw_message = "To: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s" % (
+        to, subject or "", body or "")
+    encoded = base64.urlsafe_b64encode(raw_message.encode("utf-8")).decode("ascii")
+    payload = json.dumps({"message": {"raw": encoded}}).encode("utf-8")
+    request = urllib.request.Request(
+        GMAIL_DRAFTS, data=payload,
+        headers={"authorization": "Bearer " + token, "content-type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body_json = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        if exc.code in (401, 403):
+            raise GoogleError("Google won't let me write drafts (%s). Re-run "
+                              "setup_google.py and enable agent hands." % exc.code)
+        raise GoogleError("Google API returned %s: %s" % (exc.code, detail))
+    except urllib.error.URLError as exc:
+        raise GoogleError("Cannot reach Google — %s" % exc.reason)
+    return body_json.get("id", "")
+
 
 def _rfc3339(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

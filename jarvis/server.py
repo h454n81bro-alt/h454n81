@@ -198,6 +198,60 @@ def is_brief_query(question):
     return bool(_BRIEF_GREETING.match(question) or _BRIEF_COMMAND.match(question))
 
 
+DRAFT_PROMPT = """The user has asked you to draft an email. Write the draft — you do NOT send anything; a draft is saved for the user to review and send themselves.
+
+Return exactly two parts and nothing else:
+SUBJECT: <a short subject line>
+---
+<the body of the email>
+
+Write the body in the user's voice as a capable professional: courteous, clear, and brief — a few sentences, not an essay. Do not sign it with a name unless the user gave one. Do not add commentary before SUBJECT or after the body. If the request names a specific person or thread, write as a reply to them."""
+
+# "draft a reply to Dani", "write an email to ops@x.com about the order", "reply to Two Rivers"
+_DRAFT_TRIGGER = re.compile(
+    r"^(?:jarvis[,\s]+)?(?:please\s+|can you\s+|could you\s+)*"
+    r"(?:draft|write|compose|prepare|reply(?:\s+to)?|respond(?:\s+to)?)\b", re.I)
+
+# The "do it" gate. Only meaningful when a draft is waiting.
+_CONFIRM = re.compile(
+    r"^(?:jarvis[,\s]+)?(?:yes[,\s]*)?"
+    r"(do it|send it|save it|go ahead|make it|create it|that's? (?:good|fine|perfect)|"
+    r"looks good|approved?|confirm|ship it)\b", re.I)
+_CANCEL = re.compile(
+    r"^(?:jarvis[,\s]+)?(no|nope|cancel|scrap it|forget it|discard|never ?mind|don'?t)\b", re.I)
+
+
+def is_draft_query(question):
+    q = (question or "").strip()
+    if not _DRAFT_TRIGGER.match(q):
+        return False
+    # "reply" alone that is really a notes question shouldn't count; require an
+    # addressee cue (to X, a name, an @address) somewhere in it.
+    return bool(re.search(r"\b(to|for)\b|@|reply|respond", q, re.I))
+
+
+def is_confirmation(question):
+    return bool(_CONFIRM.match((question or "").strip()))
+
+
+def is_cancellation(question):
+    return bool(_CANCEL.match((question or "").strip()))
+
+
+def parse_draft(text):
+    """Pull SUBJECT and body out of the model's reply."""
+    subject, body = "", (text or "").strip()
+    m = re.search(r"SUBJECT:\s*(.+)", text or "", re.I)
+    if m:
+        subject = m.group(1).splitlines()[0].strip()
+    parts = re.split(r"\n?-{3,}\n?", text or "", maxsplit=1)
+    if len(parts) == 2:
+        body = parts[1].strip()
+    elif m:
+        body = (text[m.end():]).strip()
+    return subject, body
+
+
 VISION_BRIEF = """The user has shared a still frame of their screen and asked you about it. Answer from what is actually visible in the image — this is not a question about their notes.
 
 Say what matters in two or three sentences: the thing they asked about first. Do not narrate the whole screen, do not list every window, and never guess at text you cannot actually read. If the image is too small or blurred to make out, say so plainly."""
@@ -884,6 +938,7 @@ class Jarvis(object):
         self.backend = resolve_backend(config)
         self.lock = threading.Lock()
         self.sessions = {}
+        self.pending_drafts = {}          # session_id -> {to, subject, body} awaiting "do it"
         self.graph = build.build_graph(self.notes_dir)
 
         # Cloned-voice TTS is optional. Probe once so the browser knows which voice
@@ -906,6 +961,9 @@ class Jarvis(object):
         }
 
     # -- state ------------------------------------------------------------
+    def compose_allowed(self):
+        return self.google_ready and bool((self.config.get("google") or {}).get("compose"))
+
     @property
     def note_count(self):
         return len(self.graph["nodes"])
@@ -994,6 +1052,20 @@ class Jarvis(object):
         if not question:
             return {"answer": "You said nothing at all, sir.", "nodes": [], "sources": [],
                     "backend": self.backend, "mode": "idle"}
+
+        # A waiting draft turns the next "do it" / "no" into a decision, not a query.
+        with self.lock:
+            has_pending = session_id in self.pending_drafts
+        if has_pending and is_confirmation(question):
+            return self._commit_draft(session_id)
+        if has_pending and is_cancellation(question):
+            with self.lock:
+                self.pending_drafts.pop(session_id, None)
+            return {"answer": "Discarded, sir. Nothing was saved.", "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "draft_cancelled", "model": None}
+
+        if is_draft_query(question):
+            return self._draft_answer(question, session_id, dials, model)
 
         if is_brief_query(question):
             return self._brief_answer(question, session_id, dials, model)
@@ -1113,6 +1185,103 @@ class Jarvis(object):
             "backend": self.backend, "mode": "vision",
             "model": model if self.backend != "offline" else None,
         }
+
+    # -- agent hands: draft an email (never sends) --------------------------
+    def _resolve_recipient(self, question):
+        """Find who a draft is addressed to: an explicit @address, or a sender in
+        the recent inbox matched by name. Returns (to_address, display, subject_hint)."""
+        m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", question)
+        if m:
+            return m.group(0), m.group(0), ""
+        if not self.google_ready:
+            return "", "", ""
+        # "reply to Two Rivers" -> match against recent senders.
+        try:
+            token = google_api.access_token(self.config)
+            emails = google_api.recent_email(token, max_results=15)
+        except google_api.GoogleError:
+            return "", "", ""
+        q = question.lower()
+        for e in emails:
+            name = (e.get("from") or "").lower()
+            if name and (name in q or any(w in q for w in name.split() if len(w) > 3)):
+                subj = e.get("subject", "")
+                hint = subj if subj.lower().startswith("re:") else ("Re: " + subj if subj else "")
+                return e.get("email", ""), e.get("from", ""), hint
+        return "", "", ""
+
+    def _draft_answer(self, question, session_id, dials, model):
+        if not self.google_ready:
+            return {"answer": ("I've no mailbox to draft into, sir — run setup_google.py first."),
+                    "nodes": [], "sources": [], "backend": self.backend, "mode": "idle",
+                    "model": None}
+        if not self.compose_allowed():
+            return {"answer": ("I can read your mail but not draft it, sir. Re-run "
+                               "setup_google.py and enable agent hands."),
+                    "nodes": [], "sources": [], "backend": self.backend, "mode": "idle",
+                    "model": None}
+        if self.backend == "offline":
+            return {"answer": ("Drafting needs my wits, sir — the API or the CLI, not offline."),
+                    "nodes": [], "sources": [], "backend": self.backend, "mode": "idle",
+                    "model": None}
+
+        to_addr, display, subject_hint = self._resolve_recipient(question)
+        model = resolve_model(model, self.config)
+        system = compose_system_prompt(dials) + "\n\n" + DRAFT_PROMPT
+        context = ""
+        if display:
+            context = "\n\n(Addressing: %s%s.)" % (
+                display, (" — likely subject: " + subject_hint) if subject_hint else "")
+        messages = [{"role": "user", "content": question + context}]
+
+        try:
+            if self.backend == "api":
+                raw = call_anthropic(self.config, system, messages, model=model)
+            else:
+                raw = call_claude_cli(system, messages, model=model)
+        except BackendError as exc:
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+
+        subject, body = parse_draft(raw)
+        subject = subject or (subject_hint or "(no subject)")
+        with self.lock:
+            self.pending_drafts[session_id] = {"to": to_addr, "subject": subject, "body": body,
+                                               "display": display}
+
+        addressed = (" to " + display) if display else ""
+        confirm = ("Say “do it” and I'll save it to your drafts, sir."
+                   if to_addr else
+                   "I don't have an address for them, sir — add one, or say “do it” to "
+                   "save it as a draft with the recipient blank.")
+        return {
+            "answer": "Here's a draft%s. %s" % (addressed, confirm),
+            "nodes": [], "sources": [], "backend": self.backend, "mode": "draft",
+            "draft": {"to": to_addr or display, "subject": subject, "body": body},
+            "model": model if self.backend != "offline" else None,
+        }
+
+    def _commit_draft(self, session_id):
+        with self.lock:
+            draft = self.pending_drafts.pop(session_id, None)
+        if not draft:
+            return {"answer": "Nothing was waiting, sir.", "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "idle", "model": None}
+        try:
+            token = google_api.access_token(self.config)
+            google_api.create_draft(token, draft["to"], draft["subject"], draft["body"])
+        except google_api.GoogleError as exc:
+            # Put it back so the user can fix and retry.
+            with self.lock:
+                self.pending_drafts[session_id] = draft
+            return {"answer": str(exc), "nodes": [], "sources": [],
+                    "backend": self.backend, "mode": "error", "error": True}
+        self.log_activity("draft", session_id,
+                          "draft to %s: %s" % (draft.get("display") or draft["to"], draft["subject"]),
+                          [])
+        return {"answer": "Saved to your drafts, sir. Yours to send when you please.",
+                "nodes": [], "sources": [], "backend": self.backend,
+                "mode": "draft_saved", "model": None}
 
     # -- morning brief ------------------------------------------------------
     def brief_data(self):
@@ -1527,6 +1696,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "dials": DEFAULT_DIALS,
                 "tts": j.tts_status(),
                 "brief": j.google_ready and j.backend != "offline",
+                "compose": j.compose_allowed() and j.backend != "offline",
             })
 
         target = self.resolve_static(route)
@@ -1640,7 +1810,8 @@ def main(argv=None):
     print("  %d notes indexed from %s" % (jarvis.note_count, jarvis.notes_dir))
     print("  Brain: %s" % backend_note)
     if jarvis.google_ready:
-        print("  Brief: Gmail + Calendar connected")
+        print("  Brief: Gmail + Calendar connected%s"
+              % (" (+ agent hands: drafts)" if jarvis.compose_allowed() else ""))
     if jarvis.tts_available and jarvis.default_voice:
         print("  Voice: ElevenLabs (%d voice(s) available)" % len(jarvis.voices))
     elif jarvis.config.get("elevenlabs", {}).get("api_key"):

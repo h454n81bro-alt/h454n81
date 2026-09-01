@@ -89,8 +89,17 @@ def main():
         print("\nNo client credentials — cannot continue.", file=sys.stderr)
         return 2
 
+    # Agent hands (draft writing) is the one write scope. Opt in explicitly.
+    print("\nAgent hands lets JARVIS DRAFT emails for you (\"draft a reply to…\").")
+    print("It only ever saves a draft — it never sends. This needs one extra permission.")
+    want_compose = input("Enable draft-writing? [y/N]: ").strip().lower().startswith("y")
+    scopes = list(google_api.READ_SCOPES)
+    if want_compose:
+        scopes.append(google_api.COMPOSE_SCOPE)
+    google["compose"] = want_compose
+
     state = os.urandom(8).hex()
-    url = google_api.consent_url(google["client_id"], REDIRECT_URI, state)
+    url = google_api.consent_url(google["client_id"], REDIRECT_URI, state, scopes=scopes)
 
     server = http.server.HTTPServer((REDIRECT_HOST, REDIRECT_PORT), CatchCode)
     thread = threading.Thread(target=server.handle_request, daemon=True)
