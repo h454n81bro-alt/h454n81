@@ -1676,6 +1676,24 @@ class TestHttp(TempVault):
         self.assertIn("<title>JARVIS", body)
         self.assertIn('src="graph-data.js"', body)
 
+    def test_root_resolves_to_index_regardless_of_separator(self):
+        """Regression: on Windows url2pathname turned "/" into a backslash, so the
+        root path 404'd and the whole viewer was a blank page. resolve_static must
+        decide the root case before any separator conversion."""
+        handler = self.httpd.RequestHandlerClass
+        # A tiny stand-in so we can call resolve_static without a live request.
+        class Probe(handler):
+            def __init__(self):
+                pass
+        probe = Probe()
+        for root in ["/", "", "/index.html"]:
+            self.assertIsNotNone(probe.resolve_static(root), root)
+        # A backslash-style path (as Windows' url2pathname would produce) still maps in.
+        self.assertIsNotNone(probe.resolve_static("\\index.html"))
+        # …and traversal is still refused.
+        for bad in ["/../config.json", "\\..\\config.json", "/%2e%2e/config.json"]:
+            self.assertIsNone(probe.resolve_static(bad), bad)
+
     def test_viewer_assets_are_served(self):
         self.assertEqual(self.get("/vendor/3d-force-graph.min.js")[0], 200)
 
