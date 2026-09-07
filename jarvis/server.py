@@ -1725,12 +1725,19 @@ class JarvisHandler(BaseHTTPRequestHandler):
             return None
 
     def resolve_static(self, path):
-        """Map a URL path to a file inside viewer/, or None. Nothing else is servable."""
+        """Map a URL path to a file inside viewer/, or None. Nothing else is servable.
+
+        The root case is decided from the raw URL path, then the path is decoded and
+        split on either separator — so "/" serves index.html on Windows too, where
+        url2pathname() would turn it into a backslash and hide the page (the bug that
+        made the whole viewer 404 on Windows).
+        """
         path = path.split("?", 1)[0].split("#", 1)[0]
-        path = urllib.request.url2pathname(path)
         if path in ("", "/"):
             path = "/index.html"
-        candidate = os.path.normpath(os.path.join(VIEWER_DIR, path.lstrip("/\\")))
+        decoded = urllib.parse.unquote(path)
+        parts = [p for p in re.split(r"[\\/]+", decoded) if p not in ("", ".")]
+        candidate = os.path.normpath(os.path.join(VIEWER_DIR, *parts)) if parts else VIEWER_DIR
         root = os.path.realpath(VIEWER_DIR)
         real = os.path.realpath(candidate)
         if real != root and not real.startswith(root + os.sep):
